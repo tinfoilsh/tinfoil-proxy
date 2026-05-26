@@ -1,0 +1,54 @@
+{
+  "name": "tinfoil-proxy",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Verified Tinfoil HTTP proxy and the menu-bar app that wraps it",
+  "author": {
+    "name": "Tinfoil",
+    "email": "support@tinfoil.sh",
+    "url": "https://tinfoil.sh"
+  },
+  "homepage": "https://tinfoil.sh",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tinfoilsh/tinfoil-proxy.git"
+  },
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "build:cli": "bash scripts/build-cli.sh",
+    "dev": "npm run build:cli && electron-vite dev",
+    "build": "npm run build:cli && electron-vite build",
+    "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "lint": "eslint --max-warnings 0 \"src/**/*.{ts,tsx}\"",
+    "package:mac:x64": "npm run build && electron-builder --mac pkg dmg zip --x64",
+    "package:mac:arm64": "npm run build && electron-builder --mac pkg dmg zip --arm64",
+    "package:linux": "npm run build && electron-builder --linux",
+    "package:win": "npm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3",
+    "react-icons": "^5.6.0",
+    "tinfoil": "^1.1.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@typescript-eslint/eslint-plugin": "^8.10.0",
+    "@typescript-eslint/parser": "^8.10.0",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "eslint": "^9.13.0",
+    "globals": "^14.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vite": "^7.3.3"
+  }
+}

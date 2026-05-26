@@ -1,0 +1,76 @@
+appId: sh.tinfoil.tray
+productName: Tinfoil
+directories:
+  buildResources: assets
+  output: dist
+files:
+  - out/**
+  - package.json
+  - "!**/{.eslintrc,.eslintignore,.prettierrc,tsconfig*.json}"
+extraMetadata:
+  main: out/main/index.js
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - "**/*"
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: pkg
+      arch:
+        - x64
+        - arm64
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  artifactName: ${productName}-${arch}.${ext}
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  notarize: true
+  extendInfo:
+    LSUIElement: true
+    NSHumanReadableCopyright: Copyright © Tinfoil Systems
+publish:
+  - provider: github
+    owner: tinfoilsh
+    repo: tinfoil-proxy
+    releaseType: release
+pkg:
+  installLocation: /Applications
+  allowAnywhere: false
+  allowCurrentUserHome: false
+  allowRootDirectory: true
+  isRelocatable: false
+  isVersionChecked: true
+  hasStrictIdentifier: true
+  overwriteAction: upgrade
+  scripts: build/pkg-scripts
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Network
+  icon: assets/icon.png
+appImage:
+  artifactName: ${productName}.${ext}
+deb:
+  artifactName: tinfoil_${arch}.${ext}
+win:
+  target:
+    - nsis
+  icon: assets/icon.png
+nsis:
+  artifactName: ${productName}-Setup.${ext}
