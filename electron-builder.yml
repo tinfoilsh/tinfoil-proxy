@@ -56,11 +56,11 @@ dmg:
   iconSize: 96
   iconTextSize: 13
   contents:
-    - x: 140
-      y: 200
+    - x: 135
+      y: 175
       type: file
-    - x: 400
-      y: 200
+    - x: 405
+      y: 175
       type: link
       path: /Applications
 pkg:
