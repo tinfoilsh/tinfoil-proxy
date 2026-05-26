@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build & publish (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            package_script: package:mac:x64
+          - os: macos-latest
+            package_script: package:mac:arm64
+          - os: ubuntu-latest
+            package_script: package:linux
+          - os: windows-latest
+            package_script: package:win
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0 # zizmor: ignore[cache-poisoning]
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Package & publish (macOS)
+        if: startsWith(matrix.os, 'macos')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+          CSC_INSTALLER_LINK: ${{ secrets.APPLE_INSTALLER_P12_BASE64 }}
+          CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.APPLE_INSTALLER_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run ${{ matrix.package_script }} -- --publish always
+
+      - name: Package & publish (Linux/Windows)
+        if: ${{ !startsWith(matrix.os, 'macos') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run ${{ matrix.package_script }} -- --publish always
+
+  cli-binaries:
+    name: Cross-compile standalone CLI
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build per-platform binaries
+        run: |
+          set -euo pipefail
+          mkdir -p release-bin
+          for target in \
+              "darwin amd64 tinfoil-proxy-darwin-amd64" \
+              "darwin arm64 tinfoil-proxy-darwin-arm64" \
+              "linux amd64 tinfoil-proxy-linux-amd64" \
+              "linux arm64 tinfoil-proxy-linux-arm64" \
+              "windows amd64 tinfoil-proxy-windows-amd64.exe"; do
+            set -- $target
+            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
+              go build -trimpath -ldflags="-s -w" -o "release-bin/$3" .
+          done
+          ls -la release-bin
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" release-bin/* --clobber
