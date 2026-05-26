@@ -4,7 +4,8 @@ import { loadConfig } from './config.js'
 import { ROUTERS_REFRESH_INTERVAL_MS } from './constants.js'
 import { registerIpc } from './ipc.js'
 import { applyLaunchAtLogin } from './login-item.js'
-import { createTray } from './menu.js'
+import { createTray, getTrayBounds } from './menu.js'
+import { showPopupIfReady } from './popup.js'
 import { startProxy, stopProxy } from './proxy.js'
 import { disposeSecureClients, refreshRouters } from './secure-client.js'
 import { stateStore } from './state.js'
@@ -19,8 +20,13 @@ if (process.platform === 'darwin') {
 
 const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) {
-  app.quit()
+  app.exit(0)
 }
+
+app.on('second-instance', () => {
+  const bounds = getTrayBounds()
+  if (bounds) showPopupIfReady()
+})
 
 async function bootstrap(): Promise<void> {
   registerIpc()
@@ -70,13 +76,20 @@ app.on('window-all-closed', () => {
   // Tray app: keep alive when the popup is closed.
 })
 
-app.on('before-quit', async (event) => {
+app.on('before-quit', (event) => {
   if (cleanupCompleted) return
   event.preventDefault()
-  if (routersTimer) clearInterval(routersTimer)
-  stopAutoUpdater()
-  disposeSecureClients()
-  await stopProxy()
-  cleanupCompleted = true
-  app.quit()
+  void (async () => {
+    try {
+      if (routersTimer) clearInterval(routersTimer)
+      stopAutoUpdater()
+      disposeSecureClients()
+      await stopProxy()
+    } catch (err) {
+      console.error('cleanup failed during quit:', err)
+    } finally {
+      cleanupCompleted = true
+      app.quit()
+    }
+  })()
 })

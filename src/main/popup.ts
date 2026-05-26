@@ -9,6 +9,8 @@ import {
 } from './constants.js'
 
 let popup: BrowserWindow | undefined
+let popupReady = false
+let pendingShowBounds: Rectangle | undefined
 let expanded = false
 let compactHeight = POPUP_HEIGHT_COMPACT
 let lastTrayBounds: Rectangle | undefined
@@ -51,11 +53,30 @@ function createPopup(): BrowserWindow {
   })
 
   const entry = rendererEntry()
-  if (entry.startsWith('http')) {
-    void window.loadURL(entry)
-  } else {
-    void window.loadFile(entry)
-  }
+  const loadPromise = entry.startsWith('http')
+    ? window.loadURL(entry)
+    : window.loadFile(entry)
+  loadPromise.catch((err) => {
+    console.error('[popup] failed to load renderer:', err)
+  })
+
+  window.once('ready-to-show', () => {
+    popupReady = true
+    if (pendingShowBounds) {
+      const bounds = pendingShowBounds
+      pendingShowBounds = undefined
+      positionUnderTray(window, bounds)
+      window.show()
+      window.focus()
+    }
+  })
+
+  window.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[popup] renderer gone:', details.reason)
+    popupReady = false
+    popup = undefined
+    window.destroy()
+  })
 
   window.on('blur', () => {
     window.hide()
@@ -63,6 +84,7 @@ function createPopup(): BrowserWindow {
 
   window.on('closed', () => {
     popup = undefined
+    popupReady = false
   })
 
   return window
@@ -106,7 +128,23 @@ export function togglePopup(trayBounds: Rectangle): void {
     resizeAnchoredUnderTray(popup, compactHeight, false)
     return
   }
+  if (!popupReady) {
+    pendingShowBounds = trayBounds
+    return
+  }
   positionUnderTray(popup, trayBounds)
+  popup.show()
+  popup.focus()
+}
+
+export function showPopupIfReady(): void {
+  if (!popup || !lastTrayBounds) return
+  if (popup.isVisible()) return
+  if (!popupReady) {
+    pendingShowBounds = lastTrayBounds
+    return
+  }
+  positionUnderTray(popup, lastTrayBounds)
   popup.show()
   popup.focus()
 }

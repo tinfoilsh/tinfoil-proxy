@@ -160,3 +160,7 @@ export function createTray(): Tray {
 
   return tray
 }
+
+export function getTrayBounds(): Rectangle | undefined {
+  return tray?.getBounds()
+}
