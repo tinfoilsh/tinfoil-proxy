@@ -25,11 +25,11 @@ function isActive(state: TrayState): boolean {
 
 function headerLabel(state: TrayState): string {
   const { proxy } = state
-  if (!proxy.enabled) return '● Tinfoil — Off'
-  if (proxy.lastError) return '● Tinfoil — Attestation failed'
-  if (proxy.verifying) return '○ Tinfoil — Verifying enclave…'
-  if (proxy.running && proxy.verified) return '● Tinfoil — Proxy on'
-  return '○ Tinfoil — Starting…'
+  if (!proxy.enabled) return '● Tinfoil Proxy — Off'
+  if (proxy.lastError) return '● Tinfoil Proxy — Attestation failed'
+  if (proxy.verifying) return '○ Tinfoil Proxy — Verifying enclave…'
+  if (proxy.running && proxy.verified) return '● Tinfoil Proxy — On'
+  return '○ Tinfoil Proxy — Starting…'
 }
 
 function buildMenu(state: TrayState, openDetails: () => void): Menu {
@@ -91,7 +91,7 @@ function buildMenu(state: TrayState, openDetails: () => void): Menu {
   items.push(
     { type: 'separator' },
     {
-      label: 'Quit Tinfoil',
+      label: 'Quit Tinfoil Proxy',
       click: () => {
         app.quit()
       }
@@ -124,7 +124,7 @@ export function createTray(): Tray {
   if (tray) return tray
   const initial = trayIcon(trayIconState(false, 'initializing'))
   tray = new Tray(initial)
-  tray.setToolTip('Tinfoil')
+  tray.setToolTip('Tinfoil Proxy')
 
   const refresh = () => {
     if (!tray) return
@@ -138,7 +138,7 @@ export function createTray(): Tray {
           ? 'verified'
           : 'initializing'
     tray.setImage(trayIcon(trayIconState(active, verificationStatus)))
-    tray.setToolTip(active ? `Tinfoil — Proxy on (${state.proxy.enclave ?? 'enclave'})` : 'Tinfoil — Off')
+    tray.setToolTip(active ? `Tinfoil Proxy — On (${state.proxy.enclave ?? 'enclave'})` : 'Tinfoil Proxy — Off')
     contextMenu = buildMenu(state, () => {
       if (!tray) return
       togglePopup(tray.getBounds())

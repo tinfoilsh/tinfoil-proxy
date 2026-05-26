@@ -16,10 +16,10 @@ export function startAutoUpdater(): void {
   autoUpdater.on('update-downloaded', async (info) => {
     const choice = await dialog.showMessageBox({
       type: 'info',
-      title: 'Tinfoil update ready',
-      message: `Tinfoil ${info.version} is ready to install.`,
+      title: 'Tinfoil Proxy update ready',
+      message: `Tinfoil Proxy ${info.version} is ready to install.`,
       detail:
-        'The update will be applied the next time you quit Tinfoil, or you can restart now.',
+        'The update will be applied the next time you quit Tinfoil Proxy, or you can restart now.',
       buttons: ['Restart now', 'Later'],
       defaultId: 0,
       cancelId: 1,

@@ -1,12 +1,12 @@
 #!/bin/bash
-# Post-install hook for the Tinfoil tray app.
+# Post-install hook for the Tinfoil Proxy app.
 # Launches the app once so the user lands in the tray immediately
 # instead of having to find the app in /Applications first.
 
 set -e
 
-APP_PATH="/Applications/Tinfoil.app"
-BIN="$APP_PATH/Contents/Resources/bin/tinfoil"
+APP_PATH="/Applications/Tinfoil Proxy.app"
+BIN="$APP_PATH/Contents/Resources/bin/tinfoil-proxy"
 
 if [ -x "/usr/bin/chmod" ] && [ -f "$BIN" ]; then
   /usr/bin/chmod +x "$BIN" || true

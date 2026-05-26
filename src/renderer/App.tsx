@@ -226,17 +226,17 @@ export default function App() {
   const active = enabled && running && verified
 
   const statusTitle = !enabled
-    ? 'Tinfoil is off'
+    ? 'Tinfoil Proxy is off'
     : state.proxy.lastError
       ? "Couldn't confirm your connection is private"
       : verifying
         ? 'Verifying Tinfoil enclave…'
         : verified && running
           ? "You're protected by Tinfoil"
-          : 'Starting Tinfoil proxy…'
+          : 'Starting Tinfoil Proxy…'
 
   const statusSub = !enabled
-    ? 'Turn this on to start the local Tinfoil proxy and route API requests through attested enclaves.'
+    ? 'Turn this on to start Tinfoil Proxy and route API requests through attested enclaves.'
     : state.proxy.lastError
       ? state.proxy.lastError
       : verifying
@@ -245,7 +245,7 @@ export default function App() {
           : 'Waiting for the proxy to report its upstream enclave.'
         : verified && running
           ? 'Every API request is routed through an attested enclave whose code and hardware are verified end-to-end.'
-          : 'The Tinfoil proxy is starting on the configured port.'
+          : 'Tinfoil Proxy is starting on the configured port.'
 
   const lockState: LockState = !enabled
     ? 'off'
@@ -301,7 +301,7 @@ export default function App() {
             }}
           />
           {state.launchAtLoginSupported && (
-            <label className="launch-row" title="Start Tinfoil when you log in">
+            <label className="launch-row" title="Start Tinfoil Proxy when you log in">
               <input
                 type="checkbox"
                 checked={state.launchAtLogin}

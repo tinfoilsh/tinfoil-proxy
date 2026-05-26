@@ -1,5 +1,5 @@
-appId: sh.tinfoil.tray
-productName: Tinfoil
+appId: sh.tinfoil.proxy
+productName: Tinfoil Proxy
 directories:
   buildResources: assets
   output: dist
@@ -29,7 +29,7 @@ mac:
       arch:
         - x64
         - arm64
-  artifactName: ${productName}-${arch}.${ext}
+  artifactName: Tinfoil-Proxy-${arch}.${ext}
   icon: assets/icon.icns
   hardenedRuntime: true
   gatekeeperAssess: false
@@ -65,12 +65,12 @@ linux:
   category: Network
   icon: assets/icon.png
 appImage:
-  artifactName: ${productName}.${ext}
+  artifactName: Tinfoil-Proxy.${ext}
 deb:
-  artifactName: tinfoil_${arch}.${ext}
+  artifactName: tinfoil-proxy_${arch}.${ext}
 win:
   target:
     - nsis
   icon: assets/icon.png
 nsis:
-  artifactName: ${productName}-Setup.${ext}
+  artifactName: Tinfoil-Proxy-Setup.${ext}
