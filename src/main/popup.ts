@@ -52,6 +52,10 @@ function createPopup(): BrowserWindow {
     }
   })
 
+  if (process.platform === 'darwin') {
+    window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  }
+
   const entry = rendererEntry()
   const loadPromise = entry.startsWith('http')
     ? window.loadURL(entry)
