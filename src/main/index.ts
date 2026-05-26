@@ -11,6 +11,8 @@ import { disposeSecureClients, refreshRouters } from './secure-client.js'
 import { stateStore } from './state.js'
 import { startAutoUpdater, stopAutoUpdater } from './updater.js'
 
+app.commandLine.appendSwitch('password-store', 'basic')
+
 let routersTimer: NodeJS.Timeout | undefined
 let cleanupCompleted = false
 
