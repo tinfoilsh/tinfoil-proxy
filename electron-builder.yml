@@ -48,6 +48,21 @@ publish:
     owner: tinfoilsh
     repo: tinfoil-proxy
     releaseType: release
+dmg:
+  background: assets/dmg-background.png
+  window:
+    width: 540
+    height: 380
+  iconSize: 96
+  iconTextSize: 13
+  contents:
+    - x: 140
+      y: 200
+      type: file
+    - x: 400
+      y: 200
+      type: link
+      path: /Applications
 pkg:
   installLocation: /Applications
   allowAnywhere: false
