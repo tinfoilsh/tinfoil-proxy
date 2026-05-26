@@ -117,12 +117,12 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		req.Host = targetURL.Host
 	}
 
+	addr := bindAddress()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	})
 
-	addr := bindAddress()
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.WithError(err).Error("failed to bind listener")
@@ -146,12 +146,41 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}).Info("starting HTTP proxy server")
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           localOnlyGuard(addr, mux),
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	return server.Serve(listener)
+}
+
+func allowedHosts(addr string) map[string]struct{} {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return map[string]struct{}{addr: {}}
+	}
+	allowed := map[string]struct{}{net.JoinHostPort(host, port): {}}
+	if loopbackBinds[host] {
+		for alias := range loopbackBinds {
+			allowed[net.JoinHostPort(alias, port)] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+func localOnlyGuard(addr string, next http.Handler) http.Handler {
+	allowed := allowedHosts(addr)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := allowed[r.Host]; !ok {
+			http.Error(w, "invalid Host header", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "cross-origin requests are not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func setupLogger() {
