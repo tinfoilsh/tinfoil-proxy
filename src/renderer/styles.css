@@ -49,7 +49,6 @@ body {
   --danger: #c63838;
   --danger-soft: rgba(198, 56, 56, 0.12);
   --warning: #b86b00;
-  --iframe-bg: var(--tinfoil-light);
   --tab-bg: rgba(0, 51, 51, 0.06);
   --tab-bg-hover: rgba(0, 51, 51, 0.12);
 
@@ -71,7 +70,6 @@ body {
   --danger: #ff6b6b;
   --danger-soft: rgba(255, 107, 107, 0.16);
   --warning: #f0a500;
-  --iframe-bg: hsl(0, 0%, 4%);
   --tab-bg: hsl(240, 2.2%, 17.6%);
   --tab-bg-hover: hsl(240, 2.2%, 22%);
 
@@ -83,10 +81,6 @@ body {
   padding: 16px 18px 14px;
   flex-shrink: 0;
   background: var(--surface-card);
-}
-
-.shell.expanded .card {
-  border-bottom: 1px solid var(--border-subtle);
 }
 
 .status-row {
@@ -285,6 +279,22 @@ body {
   flex: 1;
 }
 
+.routers-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.routers-text {
+  font-size: 11px;
+  color: var(--content-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .refresh {
   display: inline-flex;
   align-items: center;
@@ -315,38 +325,6 @@ body {
   to { transform: rotate(360deg); }
 }
 
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font: inherit;
-  font-size: 11px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: var(--tab-bg);
-  color: var(--content-primary);
-  cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
-  font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
-}
-
-.tab:hover {
-  background: var(--tab-bg-hover);
-}
-
-.tab.selected {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent-strong);
-}
-
-.tab.status-failed.selected {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
 .router-dot {
   width: 6px;
   height: 6px;
@@ -361,40 +339,4 @@ body {
 
 .router-dot.router-failed {
   background: var(--danger);
-}
-
-.iframe-wrap {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  background: var(--iframe-bg);
-  overflow: hidden;
-}
-
-.shell.compact .iframe-wrap {
-  flex: 0 0 0;
-  height: 0;
-}
-
-iframe {
-  border: none;
-  display: block;
-}
-
-.shell.compact .iframe-wrap iframe {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 520px;
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.shell.expanded .iframe-wrap iframe {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  visibility: visible;
-  pointer-events: auto;
 }

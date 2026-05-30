@@ -5,7 +5,6 @@ export interface RouterSnapshot {
   label: string
   status: 'initializing' | 'verified' | 'failed'
   lastError?: string
-  document: unknown | null
 }
 
 export interface ProxySnapshot {
@@ -40,8 +39,6 @@ const api = {
     ipcRenderer.invoke('tray:refreshRouters'),
   setLaunchAtLogin: (enabled: boolean): Promise<TrayStateSnapshot> =>
     ipcRenderer.invoke('tray:setLaunchAtLogin', enabled),
-  setExpanded: (expanded: boolean): Promise<void> =>
-    ipcRenderer.invoke('tray:setExpanded', expanded),
   setCompactHeight: (height: number): Promise<void> =>
     ipcRenderer.invoke('tray:setCompactHeight', height),
   onStateChanged: (handler: (state: TrayStateSnapshot) => void): (() => void) => {

@@ -3,7 +3,7 @@ import { clipboard, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { loadConfig, saveConfig } from './config.js'
 import { PROXY_DEFAULT_PORT } from './constants.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
-import { getPopup, notifyPopup, setPopupCompactHeight, setPopupExpanded } from './popup.js'
+import { getPopup, notifyPopup, setPopupCompactHeight } from './popup.js'
 import { proxyEndpoint, startProxy, stopProxy } from './proxy.js'
 import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
@@ -21,8 +21,7 @@ function snapshotForRenderer(state: TrayState) {
     router: r.router,
     label: `Router ${index + 1}`,
     status: r.status,
-    lastError: r.lastError,
-    document: r.document ?? null
+    lastError: r.lastError
   }))
 
   const endpoint =
@@ -109,11 +108,6 @@ export function registerIpc(): void {
     applyLaunchAtLogin(next)
     stateStore.set({ launchAtLogin: next })
     return snapshotForRenderer(stateStore.get())
-  })
-
-  ipcMain.handle('tray:setExpanded', (event, expanded: boolean) => {
-    if (!isFromPopup(event)) return
-    setPopupExpanded(!!expanded)
   })
 
   ipcMain.handle('tray:setCompactHeight', (event, height: number) => {

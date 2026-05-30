@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events'
-import type { VerificationDocument } from 'tinfoil'
 
 export type VerificationStatus = 'initializing' | 'verified' | 'failed'
 
@@ -7,7 +6,6 @@ export interface RouterState {
   router: string
   status: VerificationStatus
   lastError?: string
-  document?: VerificationDocument
 }
 
 export interface ProxyState {

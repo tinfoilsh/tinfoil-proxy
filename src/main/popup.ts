@@ -4,14 +4,15 @@ import { app, BrowserWindow, screen, type Rectangle } from 'electron'
 import {
   POPUP_HEIGHT_COMPACT,
   POPUP_HEIGHT_COMPACT_MIN,
-  POPUP_HEIGHT_EXPANDED,
   POPUP_WIDTH
 } from './constants.js'
+
+const isLinux = process.platform === 'linux'
 
 let popup: BrowserWindow | undefined
 let popupReady = false
 let pendingShowBounds: Rectangle | undefined
-let expanded = false
+let pendingCenter = false
 let compactHeight = POPUP_HEIGHT_COMPACT
 let lastTrayBounds: Rectangle | undefined
 
@@ -37,11 +38,15 @@ function createPopup(): BrowserWindow {
     width: POPUP_WIDTH,
     height: compactHeight,
     show: false,
-    frame: false,
+    title: 'Tinfoil Proxy',
+    // Linux has no reliable tray-anchored popup, so the panel is a normal framed,
+    // movable, taskbar-visible window the user can close like any other.
+    frame: isLinux,
     resizable: false,
     fullscreenable: false,
-    movable: false,
-    skipTaskbar: true,
+    movable: isLinux,
+    skipTaskbar: !isLinux,
+    autoHideMenuBar: true,
     transparent: process.platform === 'darwin',
     vibrancy: process.platform === 'darwin' ? 'menu' : undefined,
     webPreferences: {
@@ -66,6 +71,13 @@ function createPopup(): BrowserWindow {
 
   window.once('ready-to-show', () => {
     popupReady = true
+    if (pendingCenter) {
+      pendingCenter = false
+      centerOnActiveDisplay(window)
+      window.show()
+      window.focus()
+      return
+    }
     if (pendingShowBounds) {
       const bounds = pendingShowBounds
       pendingShowBounds = undefined
@@ -83,6 +95,9 @@ function createPopup(): BrowserWindow {
   })
 
   window.on('blur', () => {
+    // On Linux the window is opened from the tray menu (which steals focus) and
+    // has its own close control, so hiding on blur would make it unusable.
+    if (isLinux) return
     window.hide()
   })
 
@@ -128,8 +143,6 @@ export function togglePopup(trayBounds: Rectangle): void {
   }
   if (popup.isVisible()) {
     popup.hide()
-    expanded = false
-    resizeAnchoredUnderTray(popup, compactHeight, false)
     return
   }
   if (!popupReady) {
@@ -137,6 +150,35 @@ export function togglePopup(trayBounds: Rectangle): void {
     return
   }
   positionUnderTray(popup, trayBounds)
+  popup.show()
+  popup.focus()
+}
+
+function centerOnActiveDisplay(window: BrowserWindow): void {
+  const cursor = screen.getCursorScreenPoint()
+  const work = screen.getDisplayNearestPoint(cursor).workArea
+  const size = window.getSize()
+  const w = size[0] ?? POPUP_WIDTH
+  const h = size[1] ?? compactHeight
+  const x = Math.round(work.x + (work.width - w) / 2)
+  const y = Math.round(work.y + (work.height - h) / 2)
+  window.setBounds({ x, y, width: w, height: h })
+}
+
+export function showDetailsWindow(): void {
+  if (!popup) {
+    popup = createPopup()
+  }
+  if (popup.isVisible()) {
+    popup.show()
+    popup.focus()
+    return
+  }
+  if (!popupReady) {
+    pendingCenter = true
+    return
+  }
+  centerOnActiveDisplay(popup)
   popup.show()
   popup.focus()
 }
@@ -153,15 +195,14 @@ export function showPopupIfReady(): void {
   popup.focus()
 }
 
-export function setPopupExpanded(next: boolean): void {
-  if (!popup) return
-  if (expanded === next) return
-  expanded = next
-  const targetH = next ? POPUP_HEIGHT_EXPANDED : compactHeight
-  resizeAnchoredUnderTray(popup, targetH, true)
-}
-
 function resizeAnchoredUnderTray(window: BrowserWindow, height: number, animate: boolean): void {
+  if (isLinux) {
+    const work = screen.getDisplayMatching(window.getBounds()).workArea
+    const x = Math.round(work.x + (work.width - POPUP_WIDTH) / 2)
+    const y = Math.round(work.y + (work.height - height) / 2)
+    window.setBounds({ x, y, width: POPUP_WIDTH, height }, animate)
+    return
+  }
   if (lastTrayBounds) {
     const { x, y } = computePopupPosition(lastTrayBounds, POPUP_WIDTH, height)
     window.setBounds({ x, y, width: POPUP_WIDTH, height }, animate)
@@ -180,7 +221,7 @@ export function setPopupCompactHeight(rawHeight: number): void {
   const next = Math.max(Math.ceil(rawHeight), POPUP_HEIGHT_COMPACT_MIN)
   if (next === compactHeight) return
   compactHeight = next
-  if (popup && !expanded) {
+  if (popup) {
     resizeAnchoredUnderTray(popup, compactHeight, false)
   }
 }

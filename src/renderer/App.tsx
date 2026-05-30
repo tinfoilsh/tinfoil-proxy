@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { PiArrowsClockwise, PiSpinner } from 'react-icons/pi'
 
-const VERIFICATION_CENTER_BASE_URL = 'https://verification-center.tinfoil.sh'
-const VERIFICATION_CENTER_ORIGIN = new URL(VERIFICATION_CENTER_BASE_URL).origin
-const SEND_RETRY_DELAYS_MS = [100, 300, 800, 2000]
 const REFRESH_MIN_SPIN_MS = 1000
 
 type TrayState = Awaited<ReturnType<typeof window.tinfoil.getState>>
-type Router = TrayState['routers'][number]
 
 function useDarkMode(): boolean {
   const [dark, setDark] = useState(() =>
@@ -22,8 +18,8 @@ function useDarkMode(): boolean {
   return dark
 }
 
-function dotForRouter(r: Router): string {
-  switch (r.status) {
+function fleetDot(status: TrayState['status']): string {
+  switch (status) {
     case 'verified':
       return 'router-dot router-verified'
     case 'failed':
@@ -52,17 +48,10 @@ function LockBadge({ state }: { state: LockState }) {
   )
 }
 
-function postToIframe(iframe: HTMLIFrameElement | null, message: unknown): void {
-  iframe?.contentWindow?.postMessage(message, VERIFICATION_CENTER_ORIGIN)
-}
-
 export default function App() {
   const [state, setState] = useState<TrayState | null>(null)
-  const [iframeReady, setIframeReady] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [selectedRouter, setSelectedRouter] = useState<string | null>(null)
   const [portInput, setPortInput] = useState<string>('')
-  const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
   const portInputRef = useRef<HTMLInputElement | null>(null)
   const isDark = useDarkMode()
@@ -90,66 +79,6 @@ export default function App() {
     setPortInput(String(state.proxy.port))
   }, [state?.proxy.port])
 
-  const selectedDocument = useMemo(() => {
-    if (!selectedRouter || !state) return null
-    return state.routers.find((r) => r.router === selectedRouter)?.document ?? null
-  }, [selectedRouter, state])
-
-  useEffect(() => {
-    if (!iframeReady || !selectedDocument) return
-    const iframe = iframeRef.current
-    const send = () =>
-      postToIframe(iframe, {
-        type: 'TINFOIL_VERIFICATION_DOCUMENT',
-        document: selectedDocument
-      })
-    send()
-    const timers = SEND_RETRY_DELAYS_MS.map((delay) => setTimeout(send, delay))
-    return () => timers.forEach(clearTimeout)
-  }, [iframeReady, selectedDocument])
-
-  useEffect(() => {
-    const handle = (event: MessageEvent) => {
-      if (event.origin !== VERIFICATION_CENTER_ORIGIN) return
-      const type = (event.data as { type?: string } | undefined)?.type
-      if (type === 'TINFOIL_VERIFICATION_CENTER_READY') {
-        setIframeReady(true)
-      } else if (type === 'TINFOIL_REQUEST_VERIFICATION_DOCUMENT' && selectedDocument) {
-        postToIframe(iframeRef.current, {
-          type: 'TINFOIL_VERIFICATION_DOCUMENT',
-          document: selectedDocument
-        })
-      } else if (type === 'TINFOIL_VERIFICATION_CENTER_CLOSED') {
-        setSelectedRouter(null)
-      }
-    }
-    window.addEventListener('message', handle)
-    return () => window.removeEventListener('message', handle)
-  }, [selectedDocument])
-
-  const isExpanded = selectedRouter !== null
-
-  useEffect(() => {
-    if (!iframeReady) return
-    postToIframe(iframeRef.current, {
-      type: isExpanded ? 'TINFOIL_VERIFICATION_CENTER_OPEN' : 'TINFOIL_VERIFICATION_CENTER_CLOSE'
-    })
-  }, [iframeReady, isExpanded])
-
-  useEffect(() => {
-    void window.tinfoil.setExpanded(isExpanded)
-  }, [isExpanded])
-
-  const iframeUrl = useMemo(() => {
-    const params = new URLSearchParams({
-      darkMode: String(isDark),
-      showVerificationFlow: 'true',
-      compact: 'false',
-      open: 'true'
-    })
-    return `${VERIFICATION_CENTER_BASE_URL}?${params.toString()}`
-  }, [isDark])
-
   const onToggleActive = useCallback(async () => {
     if (!state) return
     setBusy(true)
@@ -157,15 +86,10 @@ export default function App() {
       const next = !state.proxy.enabled
       const updated = await window.tinfoil.setProxyEnabled(next)
       setState(updated)
-      if (!next) setSelectedRouter(null)
     } finally {
       setBusy(false)
     }
   }, [state])
-
-  const onSelectRouter = useCallback((router: string) => {
-    setSelectedRouter((prev) => (prev === router ? null : router))
-  }, [])
 
   const onCommitPort = useCallback(async () => {
     if (!state) return
@@ -258,7 +182,7 @@ export default function App() {
           : 'initializing'
 
   return (
-    <div className={`shell ${isExpanded ? 'expanded' : 'compact'} ${active ? 'active' : 'inactive'} ${isDark ? 'dark' : 'light'}`}>
+    <div className={`shell compact ${active ? 'active' : 'inactive'} ${isDark ? 'dark' : 'light'}`}>
       <div className="card" ref={cardRef}>
         <div className="status-row">
           <LockBadge state={lockState} />
@@ -328,28 +252,16 @@ export default function App() {
           </button>
         )}
 
-        <div className="tabs" role="tablist">
+        <div className="tabs">
           {state.routers.length === 0 ? (
             <div className="tabs-empty">
               {refreshing ? 'Refreshing routers…' : 'No routers reachable'}
             </div>
           ) : (
-            state.routers.map((r) => {
-              const isSelected = selectedRouter === r.router
-              return (
-                <button
-                  key={r.router}
-                  type="button"
-                  role="tab"
-                  aria-selected={isSelected}
-                  className={`tab ${isSelected ? 'selected' : ''} status-${r.status}`}
-                  onClick={() => onSelectRouter(r.router)}
-                >
-                  <span className={dotForRouter(r)} />
-                  <span className="tab-label">{r.label}</span>
-                </button>
-              )
-            })
+            <div className="routers-summary">
+              <span className={fleetDot(state.status)} />
+              <span className="routers-text">{state.statusMessage}</span>
+            </div>
           )}
           <button
             type="button"
@@ -368,17 +280,6 @@ export default function App() {
             )}
           </button>
         </div>
-      </div>
-
-      <div className="iframe-wrap" aria-hidden={!isExpanded}>
-        <iframe
-          ref={iframeRef}
-          src={iframeUrl}
-          title="Tinfoil Verification Center"
-          sandbox="allow-scripts allow-same-origin"
-          referrerPolicy="no-referrer"
-          onLoad={() => setIframeReady(true)}
-        />
       </div>
     </div>
   )

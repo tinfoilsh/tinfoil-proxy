@@ -30,8 +30,7 @@ function snapshotRouters(): RouterState[] {
   return Array.from(clients.values()).map((entry) => ({
     router: entry.router,
     status: entry.status,
-    lastError: entry.lastError,
-    document: entry.document
+    lastError: entry.lastError
   }))
 }
 
