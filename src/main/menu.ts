@@ -3,13 +3,26 @@ import { app, clipboard, Menu, type MenuItemConstructorOptions, Tray, type Recta
 import { loadConfig, saveConfig } from './config.js'
 import { trayIcon, trayIconState } from './icons.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
-import { hidePopup, togglePopup } from './popup.js'
+import { hidePopup, showDetailsWindow, togglePopup } from './popup.js'
 import { proxyEndpoint, startProxy, stopProxy } from './proxy.js'
 import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
 
+const isLinux = process.platform === 'linux'
+
 let tray: Tray | undefined
 let contextMenu: Menu | undefined
+
+function openTrayDetails(): void {
+  // Linux trays expose no reliable click position or tray-anchored popup, so the
+  // status panel opens as a normal centered window there.
+  if (isLinux) {
+    showDetailsWindow()
+    return
+  }
+  if (!tray) return
+  togglePopup(tray.getBounds())
+}
 
 function reportClickError(promise: Promise<void>, context: string): void {
   promise.catch((err) => {
@@ -44,7 +57,7 @@ function buildMenu(state: TrayState, openDetails: () => void): Menu {
       }
     },
     {
-      label: 'Show verification details…',
+      label: 'Show status…',
       click: openDetails
     }
   ]
@@ -139,24 +152,28 @@ export function createTray(): Tray {
           : 'initializing'
     tray.setImage(trayIcon(trayIconState(active, verificationStatus)))
     tray.setToolTip(active ? `Tinfoil Proxy — On (${state.proxy.enclave ?? 'enclave'})` : 'Tinfoil Proxy — Off')
-    contextMenu = buildMenu(state, () => {
-      if (!tray) return
-      togglePopup(tray.getBounds())
-    })
+    contextMenu = buildMenu(state, openTrayDetails)
+    // On Linux the indicator backend ignores click events and popUpContextMenu;
+    // setContextMenu is the only way to make the tray interactive (and quittable).
+    if (isLinux) {
+      tray.setContextMenu(contextMenu)
+    }
   }
 
   refresh()
   stateStore.onChange(refresh)
 
-  tray.on('click', (_event: Electron.KeyboardEvent, bounds: Rectangle) => {
-    togglePopup(bounds)
-  })
+  if (!isLinux) {
+    tray.on('click', (_event: Electron.KeyboardEvent, bounds: Rectangle) => {
+      togglePopup(bounds)
+    })
 
-  tray.on('right-click', () => {
-    if (!tray || !contextMenu) return
-    hidePopup()
-    tray.popUpContextMenu(contextMenu)
-  })
+    tray.on('right-click', () => {
+      if (!tray || !contextMenu) return
+      hidePopup()
+      tray.popUpContextMenu(contextMenu)
+    })
+  }
 
   return tray
 }

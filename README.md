@@ -29,7 +29,7 @@ go.mod / go.sum Go module + locked dependency graph
 src/
   main/         Electron main process (proxy lifecycle, IPC, menu, popup, updater)
   preload/      contextBridge exposing a typed window.tinfoil API to the renderer
-  renderer/     React popup UI + embedded verification-center iframe
+  renderer/     React popup UI (status, on/off, port, endpoint)
 assets/         App and tray-status icons (PNG + macOS .icns)
 build/          Code-signing entitlements, .pkg postinstall, iconset source
 scripts/        build-cli.sh — compiles the proxy from the local module
@@ -80,7 +80,7 @@ the Electron app with hot-reload for the renderer.
 | `npm run build:cli` | Just rebuild the embedded `tinfoil-proxy` binary |
 | `npm run package:mac:x64` | Build macOS installers for Intel (`.pkg`, `.dmg`, `.zip`) |
 | `npm run package:mac:arm64` | Build macOS installers for Apple silicon |
-| `npm run package:linux` | Build Linux installers (`.AppImage`, `.deb`) |
+| `npm run package:linux` | Build the Linux installer (`.deb`) |
 | `npm run package:win` | Build Windows installer (`.exe`, NSIS) |
 
 The macOS builds run per-architecture to avoid an
@@ -158,18 +158,39 @@ the certificate row (not the indented private-key row) and use a real export pas
 ## Auto-updates
 
 The packaged app polls GitHub Releases every 6 hours via `electron-updater` and prompts the
-user when a new build is available. `.deb` installs do not receive auto-updates; users on
-that target must reinstall the latest `.deb` manually. AppImage and macOS `.zip` / `.dmg`
-update in-place.
+user when a new build is available. macOS `.zip` / `.dmg` update in-place. The Linux `.deb`
+does not receive auto-updates; users on that target must reinstall the latest `.deb`
+manually.
+
+## Linux notes
+
+The app lives entirely in the system tray, so a StatusNotifierItem host must be present:
+
+- **GNOME (default on Ubuntu)** removed the legacy tray. Install the
+  [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615/appindicator-support/)
+  extension (or the `gnome-shell-extension-appindicator` package) so the icon appears.
+  KDE, Cinnamon, XFCE, and most other panels work out of the box.
+- The `.deb` declares the runtime indicator library (`libayatana-appindicator3-1`, falling
+  back to `libappindicator3-1`); on a minimal system install one of those manually. Its GTK
+  and at-spi dependencies are declared with `…t64 |` alternatives so the package installs on
+  both pre- and post-`t64` releases (Ubuntu 22.04 and 24.04+).
+- The tray icon uses a left-click context menu on Linux (the indicator backend doesn't
+  forward click coordinates). **Show status…** opens the panel as a normal,
+  centered window. Launching the app again while it's running re-opens that window, which is
+  handy if the tray icon isn't visible.
+- Linux ships only as a `.deb`, which installs its `chrome-sandbox` helper as root-owned
+  SUID so the Chromium sandbox stays enabled. (An AppImage can't carry a SUID helper and
+  would run unsandboxed on kernels that restrict unprivileged user namespaces, e.g. Ubuntu
+  23.10+, so that target is intentionally not built.)
+- Launch-at-login is managed by the desktop environment on Linux and is not exposed in the
+  app menu.
 
 ## Security notes
 
 - The renderer runs sandboxed: `contextIsolation: true`, `sandbox: true`,
   `nodeIntegration: false`. All renderer → main calls go through a typed preload bridge.
-- The popup HTML ships a strict Content-Security-Policy header that only allows the
-  verification-center iframe to load from `https://verification-center.tinfoil.sh`.
-- The iframe itself is restricted with `sandbox="allow-scripts allow-same-origin"` and a
-  no-referrer policy.
+- The popup HTML ships a strict Content-Security-Policy that loads only local assets and
+  disallows remote and embedded content (`frame-src 'none'`, `connect-src 'self'`).
 - The macOS app runs under Hardened Runtime with notarization enabled by default;
   unsigned builds are only produced when `CSC_IDENTITY_AUTO_DISCOVERY=false` is set.
 

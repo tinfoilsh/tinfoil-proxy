@@ -5,7 +5,7 @@ import { ROUTERS_REFRESH_INTERVAL_MS } from './constants.js'
 import { registerIpc } from './ipc.js'
 import { applyLaunchAtLogin } from './login-item.js'
 import { createTray, getTrayBounds } from './menu.js'
-import { showPopupIfReady } from './popup.js'
+import { showDetailsWindow, showPopupIfReady } from './popup.js'
 import { startProxy, stopProxy } from './proxy.js'
 import { disposeSecureClients, refreshRouters } from './secure-client.js'
 import { stateStore } from './state.js'
@@ -26,6 +26,10 @@ if (!singleInstance) {
 }
 
 app.on('second-instance', () => {
+  if (process.platform === 'linux') {
+    showDetailsWindow()
+    return
+  }
   const bounds = getTrayBounds()
   if (bounds) showPopupIfReady()
 })
