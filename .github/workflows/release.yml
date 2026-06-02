@@ -107,6 +107,13 @@ jobs:
           done
           ls -la release-bin
 
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd release-bin
+          sha256sum tinfoil-proxy-* > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

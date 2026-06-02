@@ -1,7 +1,7 @@
 #!/bin/sh
 # tinfoil-proxy install script
 # This script detects your OS/architecture, downloads the latest tinfoil-proxy
-# binary, and installs it to /usr/local/bin.
+# binary, verifies its SHA-256 checksum, and installs it to /usr/local/bin.
 #
 # Usage: curl -fsSL https://github.com/tinfoilsh/tinfoil-proxy/raw/main/install.sh | sh
 #
@@ -13,7 +13,52 @@ set -eu
 
 REPO="tinfoilsh/tinfoil-proxy"
 BIN_NAME="tinfoil-proxy"
+CHECKSUMS_FILE="SHA256SUMS"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+
+# Download $1 to $2 using curl or wget.
+download() {
+  url="$1"
+  out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$out"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$out" "$url"
+  else
+    echo "Error: This installer requires curl or wget."
+    exit 1
+  fi
+}
+
+# Verify that file $1 matches its entry for name $2 in the checksums file $3.
+verify_checksum() {
+  file="$1"
+  name="$2"
+  sums="$3"
+
+  expected="$(awk -v n="$name" '$2 == n {print $1}' "$sums" | head -n 1)"
+  if [ -z "$expected" ]; then
+    echo "Error: no checksum found for $name in $CHECKSUMS_FILE."
+    exit 1
+  fi
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  else
+    echo "Error: need sha256sum or shasum to verify the download."
+    exit 1
+  fi
+
+  if [ "$expected" != "$actual" ]; then
+    echo "Error: checksum mismatch for $name."
+    echo "  expected: $expected"
+    echo "  actual:   $actual"
+    exit 1
+  fi
+  echo "Checksum verified."
+}
 
 main() {
   echo "tinfoil-proxy install script"
@@ -56,43 +101,43 @@ main() {
   echo "Detected OS: $OS, Architecture: $ARCH"
 
   # -------------------------------
-  # 3. Construct the download URL. Release assets are raw binaries named
+  # 3. Construct the download URLs. Release assets are raw binaries named
   #    tinfoil-proxy-<os>-<arch>, so the version is not part of the filename.
   # -------------------------------
   ASSET="${BIN_NAME}-${OS}-${ARCH}"
   if [ -n "${VERSION:-}" ]; then
-    URL="https://github.com/${REPO}/releases/download/v${VERSION#v}/${ASSET}"
+    BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION#v}"
     echo "Requested version: ${VERSION#v}"
   else
-    URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+    BASE_URL="https://github.com/${REPO}/releases/latest/download"
   fi
-  echo "Downloading tinfoil-proxy from: $URL"
 
   # -------------------------------
-  # 4. Download the binary
+  # 4. Download the binary and its checksums file
   # -------------------------------
   TMPDIR="$(mktemp -d)"
   trap 'rm -rf "$TMPDIR"' EXIT
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$URL" -o "$TMPDIR/$BIN_NAME"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$TMPDIR/$BIN_NAME" "$URL"
-  else
-    echo "Error: This installer requires curl or wget."
-    exit 1
-  fi
-
-  chmod +x "$TMPDIR/$BIN_NAME"
+  echo "Downloading tinfoil-proxy from: ${BASE_URL}/${ASSET}"
+  download "${BASE_URL}/${ASSET}" "$TMPDIR/$ASSET"
+  echo "Downloading checksums from: ${BASE_URL}/${CHECKSUMS_FILE}"
+  download "${BASE_URL}/${CHECKSUMS_FILE}" "$TMPDIR/$CHECKSUMS_FILE"
 
   # -------------------------------
-  # 5. Install the binary
+  # 5. Verify integrity before installing
+  # -------------------------------
+  verify_checksum "$TMPDIR/$ASSET" "$ASSET" "$TMPDIR/$CHECKSUMS_FILE"
+
+  chmod +x "$TMPDIR/$ASSET"
+
+  # -------------------------------
+  # 6. Install the binary
   # -------------------------------
   echo "Installing tinfoil-proxy to $INSTALL_DIR..."
   if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMPDIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+    mv "$TMPDIR/$ASSET" "$INSTALL_DIR/$BIN_NAME"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo mv "$TMPDIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+    sudo mv "$TMPDIR/$ASSET" "$INSTALL_DIR/$BIN_NAME"
   else
     echo "Error: $INSTALL_DIR is not writable and sudo is unavailable."
     echo "Re-run as root or set INSTALL_DIR to a writable location."
