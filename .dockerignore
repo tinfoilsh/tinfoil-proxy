@@ -1,0 +1,13 @@
+.git
+.github
+node_modules
+out
+dist
+build
+src
+assets
+resources
+scripts
+*.md
+*.log
+.DS_Store
