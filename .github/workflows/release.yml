@@ -119,6 +119,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag || true
           gh release upload "$TAG" release-bin/* --clobber
 
   docker:
