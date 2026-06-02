@@ -7,14 +7,28 @@ traffic. An Electron menu-bar wrapper (Tinfoil Proxy.app) is built from the same
 supervises the same binary, exposing start/stop, port, and live verification status from
 the status bar.
 
-Install the standalone CLI:
+Install the standalone CLI with the install script (macOS / Linux):
 
 ```sh
-go install github.com/tinfoilsh/tinfoil-proxy@latest
+curl -fsSL https://github.com/tinfoilsh/tinfoil-proxy/raw/main/install.sh | sh
 tinfoil-proxy --port 3301
 ```
 
-Or grab a pre-built CLI binary or the menu-bar app installer from the
+Or build it from source:
+
+```sh
+go install github.com/tinfoilsh/tinfoil-proxy@latest
+```
+
+Or run it in a container:
+
+```sh
+docker run --rm -p 127.0.0.1:3301:3301 ghcr.io/tinfoilsh/tinfoil-proxy
+```
+
+The image binds to `0.0.0.0` inside the container; publishing to `127.0.0.1`
+keeps the endpoint loopback-only on the host. You can also grab a pre-built CLI
+binary or the menu-bar app installer from the
 [releases page](https://github.com/tinfoilsh/tinfoil-proxy/releases/latest).
 
 This is the canonical home for the proxy server. The legacy `tinfoil proxy` subcommand in
@@ -135,7 +149,10 @@ Three GitHub Actions workflows live in `.github/workflows/`:
 - `release.yml` — runs on tag pushes (`v*`); builds, signs, and publishes installers for
   macOS (x64 + arm64) / Linux / Windows to the GitHub release matching the tag, then
   cross-compiles the standalone `tinfoil-proxy` binary for darwin/linux/windows (amd64 +
-  arm64 where applicable) and uploads those alongside the Electron installers.
+  arm64 where applicable) and uploads those alongside the Electron installers. A final
+  `docker` job builds and pushes a multi-arch (linux/amd64 + arm64) image to
+  `ghcr.io/tinfoilsh/tinfoil-proxy`, tagged with the release version and `latest`. The
+  `install.sh` script downloads the matching standalone binary from the GitHub release.
 - `zizmor.yml` — audits all workflow files for common GitHub Actions security issues
   whenever a workflow changes.
 
