@@ -152,23 +152,23 @@ export default function App() {
   const statusTitle = !enabled
     ? 'Tinfoil Proxy is off'
     : state.proxy.lastError
-      ? "Couldn't confirm your connection is private"
+      ? "Couldn't verify the Tinfoil enclave"
       : verifying
         ? 'Verifying Tinfoil enclave…'
         : verified && running
-          ? "You're protected by Tinfoil"
+          ? "You're connected to Tinfoil"
           : 'Starting Tinfoil Proxy…'
 
   const statusSub = !enabled
-    ? 'Turn this on to start Tinfoil Proxy and route API requests through attested enclaves.'
+    ? 'Turn this on to start Tinfoil Proxy and verify the enclave before any requests are sent.'
     : state.proxy.lastError
       ? state.proxy.lastError
       : verifying
         ? state.proxy.enclave
-          ? `Independently verifying ${state.proxy.enclave} before routing traffic.`
+          ? `Independently verifying ${state.proxy.enclave} before any requests are sent.`
           : 'Waiting for the proxy to report its upstream enclave.'
         : verified && running
-          ? 'Every API request is routed through an attested enclave whose code and hardware are verified end-to-end.'
+          ? 'Requests go directly to a Tinfoil enclave whose code and hardware have been attested, over a connection pinned to its verified key.'
           : 'Tinfoil Proxy is starting on the configured port.'
 
   const lockState: LockState = !enabled
