@@ -53,7 +53,7 @@ function updateGlobalStatus(): void {
     status = 'verified'
     statusMessage =
       entries.length === 1
-        ? 'Connection secure and attestation verified'
+        ? 'Attestation verified and key pinned'
         : `All ${entries.length} routers verified`
   } else if (failed.length > 0 && verified.length === 0) {
     status = 'failed'
