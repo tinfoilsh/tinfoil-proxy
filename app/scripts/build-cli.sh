@@ -2,9 +2,10 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$DIR/.." && pwd)"
+APP_DIR="$(cd "$DIR/.." && pwd)"
+ROOT="$(cd "$APP_DIR/.." && pwd)"
 
-OUT_DIR="$ROOT/resources/bin"
+OUT_DIR="$APP_DIR/resources/bin"
 mkdir -p "$OUT_DIR"
 
 TARGET_OS="${TINFOIL_PROXY_GOOS:-$(go env GOOS)}"
