@@ -1,7 +1,7 @@
 {
   "name": "tinfoil-proxy",
   "productName": "Tinfoil Proxy",
-  "version": "0.0.12",
+  "version": "0.1.0",
   "private": true,
   "description": "Verified Tinfoil HTTP proxy and the menu-bar app that wraps it",
   "author": {
