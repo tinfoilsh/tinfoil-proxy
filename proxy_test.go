@@ -116,6 +116,27 @@ func TestEnsureStreamUsageIncludedSkipsNonStreamingRequest(t *testing.T) {
 	}
 }
 
+func TestEnsureStreamUsageIncludedPreservesExplicitIncludeUsage(t *testing.T) {
+	body := `{"model":"gpt-oss-120b","stream":true,"messages":[],"stream_options":{"include_usage":false}}`
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://127.0.0.1:3301/v1/chat/completions",
+		strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	if err := ensureStreamUsageIncluded(req); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(updated) != body {
+		t.Fatalf("expected body to stay unchanged, got %s", string(updated))
+	}
+}
+
 func assertTokenStats(t *testing.T, emitted []tokenStatsMessage, upstreamed, downstreamed uint64) {
 	t.Helper()
 	if len(emitted) == 0 {

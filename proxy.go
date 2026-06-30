@@ -332,6 +332,9 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 		streamOptions = map[string]any{}
 		payload["stream_options"] = streamOptions
 	}
+	if _, exists := streamOptions["include_usage"]; exists {
+		return nil
+	}
 	streamOptions["include_usage"] = true
 
 	updated, err := json.Marshal(payload)
