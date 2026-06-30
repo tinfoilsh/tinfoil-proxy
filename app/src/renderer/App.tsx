@@ -268,11 +268,11 @@ export default function App() {
         {enabled && (
           <div className="token-row" aria-label="Live proxy token usage">
             <div className="token-stat" title={formatFullTokenCount(state.proxy.upstreamedTokens)}>
-              <span className="token-label">Upstreamed</span>
+              <span className="token-label">Input tokens</span>
               <span className="token-value">{formatTokenCount(state.proxy.upstreamedTokens)}</span>
             </div>
             <div className="token-stat" title={formatFullTokenCount(state.proxy.downstreamedTokens)}>
-              <span className="token-label">Downstreamed</span>
+              <span className="token-label">Output tokens</span>
               <span className="token-value">{formatTokenCount(state.proxy.downstreamedTokens)}</span>
             </div>
           </div>
