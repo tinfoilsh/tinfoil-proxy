@@ -244,6 +244,12 @@ type loggingTransport struct {
 }
 
 func (lt *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if lt.tokens != nil {
+		if err := ensureStreamUsageIncluded(req); err != nil {
+			lt.logger.WithError(err).Warn("failed to request streamed token usage")
+		}
+	}
+
 	lt.logger.WithFields(log.Fields{
 		"method": req.Method,
 		"host":   req.URL.Host,
@@ -282,6 +288,66 @@ func (lt *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 
 	return resp, err
+}
+
+func ensureStreamUsageIncluded(req *http.Request) error {
+	if req.Method != http.MethodPost || req.Body == nil || req.Body == http.NoBody {
+		return nil
+	}
+	if !strings.HasSuffix(req.URL.Path, "/chat/completions") {
+		return nil
+	}
+	if req.ContentLength <= 0 || req.ContentLength > maxTokenUsageBodySize {
+		return nil
+	}
+
+	contentType := strings.ToLower(req.Header.Get("Content-Type"))
+	if contentType != "" && !strings.Contains(contentType, "application/json") {
+		return nil
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if closeErr := req.Body.Close(); err == nil {
+		err = closeErr
+	}
+	setRequestBody(req, body)
+	if err != nil {
+		return err
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	stream, ok := payload["stream"].(bool)
+	if !ok || !stream {
+		return nil
+	}
+
+	streamOptions, ok := payload["stream_options"].(map[string]any)
+	if !ok {
+		if _, exists := payload["stream_options"]; exists {
+			return nil
+		}
+		streamOptions = map[string]any{}
+		payload["stream_options"] = streamOptions
+	}
+	streamOptions["include_usage"] = true
+
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	setRequestBody(req, updated)
+	return nil
+}
+
+func setRequestBody(req *http.Request, body []byte) {
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
 }
 
 type tokenCounter struct {

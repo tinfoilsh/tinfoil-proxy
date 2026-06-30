@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -62,6 +65,55 @@ func TestStreamParserEmitsUsageDeltas(t *testing.T) {
 	parser.finalize()
 
 	assertTokenStats(t, emitted, 3, 4)
+}
+
+func TestEnsureStreamUsageIncludedAddsRequestOption(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://127.0.0.1:3301/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-oss-120b","stream":true,"messages":[]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	if err := ensureStreamUsageIncluded(req); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	streamOptions, ok := payload["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatal("expected stream_options to be added")
+	}
+	if streamOptions["include_usage"] != true {
+		t.Fatalf("expected include_usage to be true, got %v", streamOptions["include_usage"])
+	}
+	if req.ContentLength <= 0 {
+		t.Fatal("expected content length to be updated")
+	}
+}
+
+func TestEnsureStreamUsageIncludedSkipsNonStreamingRequest(t *testing.T) {
+	body := `{"model":"gpt-oss-120b","messages":[]}`
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://127.0.0.1:3301/v1/chat/completions",
+		strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	if err := ensureStreamUsageIncluded(req); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(updated) != body {
+		t.Fatalf("expected body to stay unchanged, got %s", string(updated))
+	}
 }
 
 func assertTokenStats(t *testing.T, emitted []tokenStatsMessage, upstreamed, downstreamed uint64) {
