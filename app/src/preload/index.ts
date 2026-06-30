@@ -13,6 +13,8 @@ export interface ProxySnapshot {
   verifying: boolean
   verified: boolean
   port: number
+  upstreamedTokens: number
+  downstreamedTokens: number
   enclave?: string
   lastError?: string
 }

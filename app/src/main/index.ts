@@ -46,6 +46,8 @@ async function bootstrap(): Promise<void> {
       verifying: false,
       verified: false,
       port: cfg.port,
+      upstreamedTokens: 0,
+      downstreamedTokens: 0,
       enclave: undefined,
       lastError: undefined
     },
