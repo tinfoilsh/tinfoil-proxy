@@ -1,7 +1,7 @@
 {
   "name": "tinfoil-proxy",
   "productName": "Tinfoil Proxy",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Verified Tinfoil HTTP proxy and the menu-bar app that wraps it",
   "author": {
@@ -25,15 +25,13 @@
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "lint": "eslint --max-warnings 0 \"src/**/*.{ts,tsx}\"",
-    "package:mac:x64": "npm run build && electron-builder --mac pkg dmg zip --x64",
-    "package:mac:arm64": "npm run build && electron-builder --mac pkg dmg zip --arm64",
+    "package:mac": "npm run build && electron-builder --mac pkg dmg zip --universal",
     "package:mac:dev": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg --arm64 -c.mac.notarize=false -c.mac.hardenedRuntime=false",
     "package:linux": "npm run build && electron-builder --linux",
     "package:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "electron-updater": "^6.8.3",
-    "react-icons": "^5.6.0",
     "tinfoil": "^1.1.4",
     "zod": "^4.4.3"
   },
@@ -51,6 +49,7 @@
     "globals": "^14.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-icons": "^5.6.0",
     "typescript": "^5.6.3",
     "vite": "^7.3.3"
   }
