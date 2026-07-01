@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,11 +36,8 @@ func TestExtractTokenUsageSupportsResponsesUsage(t *testing.T) {
 }
 
 func TestUsageTrackingBodyEmitsNonStreamingUsage(t *testing.T) {
-	var emitted []tokenStatsMessage
-	counter := newTokenCounter(func(msg tokenStatsMessage) error {
-		emitted = append(emitted, msg)
-		return nil
-	})
+	recorder := newTokenStatsRecorder()
+	counter := newTokenCounter(recorder.emit)
 	body := newUsageTrackingBody(
 		io.NopCloser(strings.NewReader(`{"usage":{"prompt_tokens":3,"completion_tokens":2}}`)),
 		"application/json",
@@ -49,15 +48,12 @@ func TestUsageTrackingBodyEmitsNonStreamingUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertTokenStats(t, emitted, 3, 2)
+	recorder.assertLast(t, 3, 2)
 }
 
 func TestStreamParserEmitsUsageDeltas(t *testing.T) {
-	var emitted []tokenStatsMessage
-	counter := newTokenCounter(func(msg tokenStatsMessage) error {
-		emitted = append(emitted, msg)
-		return nil
-	})
+	recorder := newTokenStatsRecorder()
+	counter := newTokenCounter(recorder.emit)
 	parser := tokenUsageParser{
 		stream: true,
 		usage:  responseTokenUsage{counter: counter},
@@ -68,7 +64,7 @@ func TestStreamParserEmitsUsageDeltas(t *testing.T) {
 	parser.write([]byte("data: [DONE]\n\n"))
 	parser.finalize()
 
-	assertTokenStats(t, emitted, 3, 4)
+	recorder.assertLast(t, 3, 4)
 }
 
 func TestEnsureStreamUsageIncludedAddsRequestOption(t *testing.T) {
@@ -166,23 +162,29 @@ func TestTokenCounterEmitsMonotonicTotals(t *testing.T) {
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	secondStarted := make(chan struct{}, 1)
-	done := make(chan struct{})
+	firstDone := make(chan struct{})
 	var emitted []tokenStatsMessage
+	var emittedMu sync.Mutex
 
 	counter := newTokenCounter(func(msg tokenStatsMessage) error {
+		emittedMu.Lock()
 		if len(emitted) == 0 {
+			emittedMu.Unlock()
 			close(firstStarted)
 			<-releaseFirst
 		} else {
+			emittedMu.Unlock()
 			secondStarted <- struct{}{}
 		}
+		emittedMu.Lock()
 		emitted = append(emitted, msg)
+		emittedMu.Unlock()
 		return nil
 	})
 
 	go func() {
 		counter.add(1, 0)
-		close(done)
+		close(firstDone)
 	}()
 
 	<-firstStarted
@@ -193,15 +195,32 @@ func TestTokenCounterEmitsMonotonicTotals(t *testing.T) {
 	}()
 
 	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second token update blocked on first stdout emit")
+	}
+
+	select {
 	case <-secondStarted:
 		t.Fatal("second emit started before first emit completed")
 	case <-time.After(25 * time.Millisecond):
 	}
 
 	close(releaseFirst)
-	<-done
-	<-secondDone
+	<-firstDone
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("second emit did not start")
+	}
+	eventually(t, func() bool {
+		emittedMu.Lock()
+		defer emittedMu.Unlock()
+		return len(emitted) == 2
+	})
 
+	emittedMu.Lock()
+	defer emittedMu.Unlock()
 	if len(emitted) != 2 {
 		t.Fatalf("expected two emissions, got %d", len(emitted))
 	}
@@ -210,12 +229,86 @@ func TestTokenCounterEmitsMonotonicTotals(t *testing.T) {
 	}
 }
 
-func assertTokenStats(t *testing.T, emitted []tokenStatsMessage, upstreamed, downstreamed uint64) {
-	t.Helper()
-	if len(emitted) == 0 {
-		t.Fatal("expected token stats to be emitted")
+func TestStreamParserCapsUnterminatedLine(t *testing.T) {
+	parser := tokenUsageParser{stream: true}
+	parser.write(bytes.Repeat([]byte("x"), maxTokenUsageBodySize+1))
+
+	if len(parser.line) > maxTokenUsageBodySize {
+		t.Fatalf("stream line grew beyond cap: %d", len(parser.line))
 	}
-	last := emitted[len(emitted)-1]
+	if !parser.lineTooBig {
+		t.Fatal("expected oversized line to be marked")
+	}
+}
+
+func TestStreamParserCapsEventDataAndRecovers(t *testing.T) {
+	recorder := newTokenStatsRecorder()
+	counter := newTokenCounter(recorder.emit)
+	parser := tokenUsageParser{
+		stream: true,
+		usage:  responseTokenUsage{counter: counter},
+	}
+
+	parser.write([]byte("data: "))
+	parser.write(bytes.Repeat([]byte("x"), maxTokenUsageBodySize+1))
+	parser.write([]byte("\n\n"))
+	if len(parser.eventData) > 0 || parser.eventBytes > 0 || parser.eventTooBig {
+		t.Fatalf("expected oversized event to be discarded, got eventData=%d eventBytes=%d eventTooBig=%v", len(parser.eventData), parser.eventBytes, parser.eventTooBig)
+	}
+
+	parser.write([]byte("data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":6}}\n\n"))
+	parser.finalize()
+
+	recorder.assertLast(t, 5, 6)
+}
+
+func eventually(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("condition was not met")
+		case <-ticker.C:
+		}
+	}
+}
+
+type tokenStatsRecorder struct {
+	mu      sync.Mutex
+	emitted []tokenStatsMessage
+}
+
+func newTokenStatsRecorder() *tokenStatsRecorder {
+	return &tokenStatsRecorder{}
+}
+
+func (r *tokenStatsRecorder) emit(msg tokenStatsMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.emitted = append(r.emitted, msg)
+	return nil
+}
+
+func (r *tokenStatsRecorder) assertLast(t *testing.T, upstreamed, downstreamed uint64) {
+	t.Helper()
+	eventually(t, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if len(r.emitted) == 0 {
+			return false
+		}
+		last := r.emitted[len(r.emitted)-1]
+		return last.Upstreamed == upstreamed && last.Downstreamed == downstreamed
+	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	last := r.emitted[len(r.emitted)-1]
 	if last.Upstreamed != upstreamed || last.Downstreamed != downstreamed {
 		t.Fatalf("expected %d upstreamed and %d downstreamed, got %d and %d", upstreamed, downstreamed, last.Upstreamed, last.Downstreamed)
 	}

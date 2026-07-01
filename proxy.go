@@ -360,10 +360,16 @@ type tokenCounter struct {
 	upstreamed   uint64
 	downstreamed uint64
 	emit         tokenStatsEmitter
+	emitCh       chan tokenStatsMessage
 }
 
 func newTokenCounter(emit tokenStatsEmitter) *tokenCounter {
-	return &tokenCounter{emit: emit}
+	c := &tokenCounter{emit: emit}
+	if emit != nil {
+		c.emitCh = make(chan tokenStatsMessage, 1)
+		go c.emitLoop()
+	}
+	return c
 }
 
 func (c *tokenCounter) add(upstreamed, downstreamed uint64) {
@@ -379,12 +385,30 @@ func (c *tokenCounter) add(upstreamed, downstreamed uint64) {
 		Upstreamed:   c.upstreamed,
 		Downstreamed: c.downstreamed,
 	}
-	if c.emit != nil {
+	if c.emitCh != nil {
+		c.queueEmitLocked(msg)
+	}
+	c.mu.Unlock()
+}
+
+func (c *tokenCounter) queueEmitLocked(msg tokenStatsMessage) {
+	select {
+	case c.emitCh <- msg:
+	default:
+		select {
+		case <-c.emitCh:
+		default:
+		}
+		c.emitCh <- msg
+	}
+}
+
+func (c *tokenCounter) emitLoop() {
+	for msg := range c.emitCh {
 		if err := c.emit(msg); err != nil {
 			log.WithError(err).Warn("failed to emit token stats")
 		}
 	}
-	c.mu.Unlock()
 }
 
 type responseTokenUsage struct {
@@ -456,13 +480,16 @@ func (b *usageTrackingBody) finalize() {
 }
 
 type tokenUsageParser struct {
-	stream     bool
-	usage      responseTokenUsage
-	body       []byte
-	line       []byte
-	eventData  []string
-	bodyTooBig bool
-	finalized  bool
+	stream      bool
+	usage       responseTokenUsage
+	body        []byte
+	line        []byte
+	lineTooBig  bool
+	eventData   []string
+	eventBytes  int
+	eventTooBig bool
+	bodyTooBig  bool
+	finalized   bool
 }
 
 func (p *tokenUsageParser) write(chunk []byte) {
@@ -485,24 +512,59 @@ func (p *tokenUsageParser) writeStream(chunk []byte) {
 	for len(chunk) > 0 {
 		newline := bytes.IndexByte(chunk, '\n')
 		if newline == -1 {
-			p.line = append(p.line, chunk...)
+			p.appendStreamLine(chunk)
 			return
 		}
-		p.line = append(p.line, chunk[:newline]...)
-		p.handleStreamLine(string(p.line))
+		p.appendStreamLine(chunk[:newline])
+		if !p.lineTooBig {
+			p.handleStreamLine(string(p.line))
+		}
 		p.line = p.line[:0]
+		p.lineTooBig = false
 		chunk = chunk[newline+1:]
 	}
+}
+
+func (p *tokenUsageParser) appendStreamLine(chunk []byte) {
+	if p.lineTooBig {
+		return
+	}
+	if len(p.line)+len(chunk) > maxTokenUsageBodySize {
+		p.line = nil
+		p.lineTooBig = true
+		p.eventTooBig = true
+		p.eventData = nil
+		p.eventBytes = 0
+		return
+	}
+	p.line = append(p.line, chunk...)
 }
 
 func (p *tokenUsageParser) handleStreamLine(line string) {
 	line = strings.TrimSuffix(line, "\r")
 	if line == "" {
+		if p.eventTooBig {
+			p.eventTooBig = false
+			p.eventData = nil
+			p.eventBytes = 0
+			return
+		}
 		p.flushStreamEvent()
 		return
 	}
+	if p.eventTooBig {
+		return
+	}
 	if strings.HasPrefix(line, "data:") {
-		p.eventData = append(p.eventData, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if p.eventBytes+len(data)+1 > maxTokenUsageBodySize {
+			p.eventTooBig = true
+			p.eventData = nil
+			p.eventBytes = 0
+			return
+		}
+		p.eventData = append(p.eventData, data)
+		p.eventBytes += len(data) + 1
 	}
 }
 
@@ -512,6 +574,7 @@ func (p *tokenUsageParser) flushStreamEvent() {
 	}
 	payload := strings.Join(p.eventData, "\n")
 	p.eventData = p.eventData[:0]
+	p.eventBytes = 0
 	if payload == "[DONE]" {
 		return
 	}
@@ -524,9 +587,16 @@ func (p *tokenUsageParser) finalize() {
 	}
 	p.finalized = true
 	if p.stream {
-		if len(p.line) > 0 {
+		if len(p.line) > 0 && !p.lineTooBig {
 			p.handleStreamLine(string(p.line))
-			p.line = nil
+		}
+		p.line = nil
+		p.lineTooBig = false
+		if p.eventTooBig {
+			p.eventTooBig = false
+			p.eventData = nil
+			p.eventBytes = 0
+			return
 		}
 		p.flushStreamEvent()
 		return
