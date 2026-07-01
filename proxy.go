@@ -246,7 +246,8 @@ type loggingTransport struct {
 func (lt *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if lt.tokens != nil {
 		if err := ensureStreamUsageIncluded(req); err != nil {
-			lt.logger.WithError(err).Warn("failed to request streamed token usage")
+			lt.logger.WithError(err).Error("failed to request streamed token usage")
+			return nil, err
 		}
 	}
 
@@ -306,14 +307,15 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 		return nil
 	}
 
-	body, err := io.ReadAll(req.Body)
-	if closeErr := req.Body.Close(); err == nil {
-		err = closeErr
+	body, readErr := io.ReadAll(req.Body)
+	closeErr := req.Body.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	setRequestBody(req, body)
-	if err != nil {
-		return err
-	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -377,13 +379,12 @@ func (c *tokenCounter) add(upstreamed, downstreamed uint64) {
 		Upstreamed:   c.upstreamed,
 		Downstreamed: c.downstreamed,
 	}
-	c.mu.Unlock()
-
 	if c.emit != nil {
 		if err := c.emit(msg); err != nil {
 			log.WithError(err).Warn("failed to emit token stats")
 		}
 	}
+	c.mu.Unlock()
 }
 
 type responseTokenUsage struct {

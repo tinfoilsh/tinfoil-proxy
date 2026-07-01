@@ -2,11 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func TestExtractTokenUsageSupportsChatUsage(t *testing.T) {
@@ -137,6 +141,75 @@ func TestEnsureStreamUsageIncludedPreservesExplicitIncludeUsage(t *testing.T) {
 	}
 }
 
+func TestLoggingTransportDoesNotProxyAfterUsageRequestReadError(t *testing.T) {
+	readErr := errors.New("partial read")
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://127.0.0.1:3301/v1/chat/completions",
+		errReaderCloser{data: []byte(`{"model":"gpt-oss-120b","stream":true`), err: readErr},
+	)
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = int64(len(`{"model":"gpt-oss-120b","stream":true`))
+
+	transport := &recordingRoundTripper{}
+	lt := withLoggingTransport(log.StandardLogger(), transport, newTokenCounter(nil))
+	resp, err := lt.RoundTrip(req)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("expected read error, got response=%v error=%v", resp, err)
+	}
+	if transport.called {
+		t.Fatal("expected upstream transport not to be called")
+	}
+}
+
+func TestTokenCounterEmitsMonotonicTotals(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{}, 1)
+	done := make(chan struct{})
+	var emitted []tokenStatsMessage
+
+	counter := newTokenCounter(func(msg tokenStatsMessage) error {
+		if len(emitted) == 0 {
+			close(firstStarted)
+			<-releaseFirst
+		} else {
+			secondStarted <- struct{}{}
+		}
+		emitted = append(emitted, msg)
+		return nil
+	})
+
+	go func() {
+		counter.add(1, 0)
+		close(done)
+	}()
+
+	<-firstStarted
+	secondDone := make(chan struct{})
+	go func() {
+		counter.add(2, 0)
+		close(secondDone)
+	}()
+
+	select {
+	case <-secondStarted:
+		t.Fatal("second emit started before first emit completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	<-done
+	<-secondDone
+
+	if len(emitted) != 2 {
+		t.Fatalf("expected two emissions, got %d", len(emitted))
+	}
+	if emitted[0].Upstreamed != 1 || emitted[1].Upstreamed != 3 {
+		t.Fatalf("expected monotonic upstream totals [1, 3], got [%d, %d]", emitted[0].Upstreamed, emitted[1].Upstreamed)
+	}
+}
+
 func assertTokenStats(t *testing.T, emitted []tokenStatsMessage, upstreamed, downstreamed uint64) {
 	t.Helper()
 	if len(emitted) == 0 {
@@ -146,4 +219,32 @@ func assertTokenStats(t *testing.T, emitted []tokenStatsMessage, upstreamed, dow
 	if last.Upstreamed != upstreamed || last.Downstreamed != downstreamed {
 		t.Fatalf("expected %d upstreamed and %d downstreamed, got %d and %d", upstreamed, downstreamed, last.Upstreamed, last.Downstreamed)
 	}
+}
+
+type errReaderCloser struct {
+	data []byte
+	err  error
+}
+
+func (r errReaderCloser) Read(p []byte) (int, error) {
+	copy(p, r.data)
+	return len(r.data), r.err
+}
+
+func (r errReaderCloser) Close() error {
+	return nil
+}
+
+type recordingRoundTripper struct {
+	called bool
+}
+
+func (r *recordingRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	r.called = true
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Header:     make(http.Header),
+	}, nil
 }

@@ -216,6 +216,7 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
       const message = parseProxyLine(line)
       if (!message) return
       if (message.event === 'tokens') {
+        if (child !== proc || proc.exitCode !== null) return
         setProxyState({
           upstreamedTokens: message.upstreamed,
           downstreamedTokens: message.downstreamed
