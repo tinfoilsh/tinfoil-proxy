@@ -16,4 +16,4 @@ EXPOSE 3301
 ENTRYPOINT ["/usr/bin/tinfoil-proxy"]
 # Bind to all interfaces by default so the proxy is reachable from a published
 # port. Keep it loopback-only on the host with `-p 127.0.0.1:3301:3301`.
-CMD ["--bind", "0.0.0.0"]
+CMD ["--bind", "0.0.0.0", "--allowed-host", "tinfoil"]

@@ -188,28 +188,39 @@ func allowedHosts(addr string) map[string]struct{} {
 		return map[string]struct{}{addr: {}}
 	}
 	allowed := map[string]struct{}{net.JoinHostPort(host, port): {}}
-	if loopbackBinds[host] {
+	if loopbackBinds[host] || isUnspecifiedBind(host) {
 		for alias := range loopbackBinds {
 			allowed[net.JoinHostPort(alias, port)] = struct{}{}
 		}
 	}
+	if isUnspecifiedBind(host) {
+		if hostname, err := os.Hostname(); err == nil && hostname != "" {
+			addAllowedHost(allowed, hostname, port)
+		}
+	}
+	for _, host := range allowedHostnames {
+		addAllowedHost(allowed, host, port)
+	}
 	return allowed
 }
 
-func allowsAnyHostHeader(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
+func addAllowedHost(allowed map[string]struct{}, host, port string) {
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		allowed[host] = struct{}{}
+		return
 	}
+	allowed[net.JoinHostPort(host, port)] = struct{}{}
+}
+
+func isUnspecifiedBind(host string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsUnspecified()
 }
 
 func localOnlyGuard(addr string, next http.Handler) http.Handler {
 	allowed := allowedHosts(addr)
-	allowAnyHost := allowsAnyHostHeader(addr)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := allowed[r.Host]; !allowAnyHost && !ok {
+		if _, ok := allowed[r.Host]; !ok {
 			http.Error(w, "invalid Host header", http.StatusBadRequest)
 			return
 		}
