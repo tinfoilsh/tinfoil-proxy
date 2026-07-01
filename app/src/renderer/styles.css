@@ -228,6 +228,39 @@ body {
   color: var(--accent-strong);
 }
 
+.token-row {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.token-stat {
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--tab-bg);
+}
+
+.token-label {
+  display: block;
+  font-size: 10px;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--content-muted);
+}
+
+.token-value {
+  display: block;
+  margin-top: 3px;
+  font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--content-primary);
+}
+
 .toggle {
   width: 42px;
   height: 24px;

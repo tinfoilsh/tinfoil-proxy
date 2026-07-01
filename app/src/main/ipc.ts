@@ -72,7 +72,14 @@ export function registerIpc(): void {
       await stopProxy()
       const current = stateStore.get().proxy
       stateStore.set({
-        proxy: { ...current, enabled: false, running: false, lastError: undefined }
+        proxy: {
+          ...current,
+          enabled: false,
+          running: false,
+          upstreamedTokens: 0,
+          downstreamedTokens: 0,
+          lastError: undefined
+        }
       })
     }
     await saveConfig({ ...cfg, proxyEnabled: nextEnabled })

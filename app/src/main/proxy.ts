@@ -22,6 +22,14 @@ interface ReadyMessage {
   listen: string
 }
 
+interface TokensMessage {
+  event: 'tokens'
+  upstreamed: number
+  downstreamed: number
+}
+
+type ProxyMessage = ReadyMessage | TokensMessage
+
 let child: CliProcess | undefined
 let intentionalShutdown = false
 let stopWaiter: Promise<void> | undefined
@@ -83,10 +91,14 @@ function attachLogging(
   })
 }
 
-function parseReadyLine(line: string): ReadyMessage | null {
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function parseProxyLine(line: string): ProxyMessage | null {
   if (!line.startsWith('{')) return null
   try {
-    const parsed = JSON.parse(line) as Partial<ReadyMessage>
+    const parsed = JSON.parse(line) as Record<string, unknown>
     if (
       parsed.event === 'ready' &&
       typeof parsed.enclave === 'string' &&
@@ -94,6 +106,17 @@ function parseReadyLine(line: string): ReadyMessage | null {
       typeof parsed.listen === 'string'
     ) {
       return { event: 'ready', enclave: parsed.enclave, repo: parsed.repo, listen: parsed.listen }
+    }
+    if (
+      parsed.event === 'tokens' &&
+      isTokenCount(parsed.upstreamed) &&
+      isTokenCount(parsed.downstreamed)
+    ) {
+      return {
+        event: 'tokens',
+        upstreamed: parsed.upstreamed,
+        downstreamed: parsed.downstreamed
+      }
     }
   } catch {
     // Not a JSON line; ignore.
@@ -125,6 +148,8 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
       verifying: false,
       verified: false,
       port,
+      upstreamedTokens: 0,
+      downstreamedTokens: 0,
       enclave: undefined,
       lastError: message
     })
@@ -145,6 +170,8 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     verifying: true,
     verified: false,
     port,
+    upstreamedTokens: 0,
+    downstreamedTokens: 0,
     enclave: undefined,
     lastError: undefined
   })
@@ -186,8 +213,16 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     proc.once('close', onEarlyExit)
 
     attachLogging(proc, logSink, (line) => {
-      const message = parseReadyLine(line)
+      const message = parseProxyLine(line)
       if (!message) return
+      if (message.event === 'tokens') {
+        if (child !== proc || proc.exitCode !== null) return
+        setProxyState({
+          upstreamedTokens: message.upstreamed,
+          downstreamedTokens: message.downstreamed
+        })
+        return
+      }
       settleReady(
         () => resolve(message),
         () => proc.off('close', onEarlyExit)

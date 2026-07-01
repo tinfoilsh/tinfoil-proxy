@@ -14,6 +14,8 @@ export interface ProxyState {
   verifying: boolean
   verified: boolean
   port: number
+  upstreamedTokens: number
+  downstreamedTokens: number
   enclave?: string
   lastError?: string
 }
@@ -61,7 +63,9 @@ export const stateStore = new StateStore({
     running: false,
     verifying: false,
     verified: false,
-    port: 0
+    port: 0,
+    upstreamedTokens: 0,
+    downstreamedTokens: 0
   },
   launchAtLogin: true
 })

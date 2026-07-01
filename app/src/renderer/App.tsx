@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { PiArrowsClockwise, PiSpinner } from 'react-icons/pi'
 
 const REFRESH_MIN_SPIN_MS = 1000
+const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat(undefined, {
+  notation: 'compact',
+  maximumFractionDigits: 1
+})
+const FULL_TOKEN_COUNT_FORMATTER = new Intl.NumberFormat()
 
 type TrayState = Awaited<ReturnType<typeof window.tinfoil.getState>>
 
@@ -27,6 +32,14 @@ function fleetDot(status: TrayState['status']): string {
     default:
       return 'router-dot'
   }
+}
+
+function formatTokenCount(count: number): string {
+  return TOKEN_COUNT_FORMATTER.format(count)
+}
+
+function formatFullTokenCount(count: number): string {
+  return `${FULL_TOKEN_COUNT_FORMATTER.format(count)} tokens`
 }
 
 type LockState = 'verified' | 'failed' | 'off' | 'initializing'
@@ -250,6 +263,19 @@ export default function App() {
             <span className="endpoint-host">{state.endpoint}</span>
             <span className="endpoint-action">{copied ? 'Copied' : 'Copy'}</span>
           </button>
+        )}
+
+        {enabled && (
+          <div className="token-row" aria-label="Live proxy token usage">
+            <div className="token-stat" title={formatFullTokenCount(state.proxy.upstreamedTokens)}>
+              <span className="token-label">Input tokens</span>
+              <span className="token-value">{formatTokenCount(state.proxy.upstreamedTokens)}</span>
+            </div>
+            <div className="token-stat" title={formatFullTokenCount(state.proxy.downstreamedTokens)}>
+              <span className="token-label">Output tokens</span>
+              <span className="token-value">{formatTokenCount(state.proxy.downstreamedTokens)}</span>
+            </div>
+          </div>
         )}
 
         <div className="tabs">
