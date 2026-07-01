@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -77,11 +78,12 @@ func TestLocalOnlyGuardAllowsLoopbackHostOnUnspecifiedBind(t *testing.T) {
 }
 
 func TestLocalOnlyGuardRejectsUnexpectedHostOnUnspecifiedBind(t *testing.T) {
+	host := unexpectedAllowedHost(t)
 	guard := localOnlyGuard("0.0.0.0:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	}))
-	req := httptest.NewRequest(http.MethodGet, "http://evil.test:3301/v1", nil)
-	req.Host = "evil.test:3301"
+	req := httptest.NewRequest(http.MethodGet, "http://"+host+":3301/v1", nil)
+	req.Host = host + ":3301"
 	rec := httptest.NewRecorder()
 
 	guard.ServeHTTP(rec, req)
@@ -113,6 +115,21 @@ func withAllowedHostnames(t *testing.T, hosts []string) {
 	t.Cleanup(func() {
 		allowedHostnames = previous
 	})
+}
+
+func unexpectedAllowedHost(t *testing.T) string {
+	t.Helper()
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{"evil.test", "unexpected.test"} {
+		if candidate != hostname {
+			return candidate
+		}
+	}
+	t.Fatal("could not choose unexpected host")
+	return ""
 }
 
 func TestUsageTrackingBodyEmitsNonStreamingUsage(t *testing.T) {
