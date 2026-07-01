@@ -23,16 +23,13 @@ mac:
   target:
     - target: pkg
       arch:
-        - x64
-        - arm64
+        - universal
     - target: dmg
       arch:
-        - x64
-        - arm64
+        - universal
     - target: zip
       arch:
-        - x64
-        - arm64
+        - universal
   artifactName: Tinfoil-Proxy-${arch}.${ext}
   icon: assets/icon.icns
   hardenedRuntime: true
