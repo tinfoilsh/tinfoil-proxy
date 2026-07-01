@@ -21,14 +21,15 @@ const (
 )
 
 var (
-	enclaveHost string
-	repo        string
-	listenPort  uint
-	listenAddr  string
-	logFormat   string
-	verbose     bool
-	trace       bool
-	handshake   bool
+	enclaveHost      string
+	repo             string
+	listenPort       uint
+	listenAddr       string
+	logFormat        string
+	verbose          bool
+	trace            bool
+	handshake        bool
+	allowedHostnames []string
 )
 
 var rootCmd = &cobra.Command{
@@ -43,6 +44,7 @@ func init() {
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
+	rootCmd.Flags().StringSliceVar(&allowedHostnames, "allowed-host", nil, "Additional Host header hostname to allow")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.Flags().BoolVarP(&trace, "trace", "t", false, "Trace output")
 	rootCmd.Flags().BoolVar(&handshake, "handshake", false, "Emit a ready line on stdout and wait for a go signal on stdin before serving (used by the Tinfoil Proxy app)")
