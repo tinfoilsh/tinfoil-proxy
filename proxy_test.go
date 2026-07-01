@@ -35,6 +35,41 @@ func TestExtractTokenUsageSupportsResponsesUsage(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyGuardAllowsContainerHostOnUnspecifiedBind(t *testing.T) {
+	nextCalled := false
+	guard := localOnlyGuard("0.0.0.0:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://tinfoil:3301/v1", nil)
+	req.Host = "tinfoil:3301"
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d", http.StatusNoContent, rec.Code)
+	}
+	if !nextCalled {
+		t.Fatal("expected next handler to be called")
+	}
+}
+
+func TestLocalOnlyGuardRejectsUnexpectedHostOnLoopbackBind(t *testing.T) {
+	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://tinfoil:3301/v1", nil)
+	req.Host = "tinfoil:3301"
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 func TestUsageTrackingBodyEmitsNonStreamingUsage(t *testing.T) {
 	recorder := newTokenStatsRecorder()
 	counter := newTokenCounter(recorder.emit)

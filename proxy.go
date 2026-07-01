@@ -196,10 +196,20 @@ func allowedHosts(addr string) map[string]struct{} {
 	return allowed
 }
 
+func allowsAnyHostHeader(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
 func localOnlyGuard(addr string, next http.Handler) http.Handler {
 	allowed := allowedHosts(addr)
+	allowAnyHost := allowsAnyHostHeader(addr)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := allowed[r.Host]; !ok {
+		if _, ok := allowed[r.Host]; !allowAnyHost && !ok {
 			http.Error(w, "invalid Host header", http.StatusBadRequest)
 			return
 		}
