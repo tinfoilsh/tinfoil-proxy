@@ -108,16 +108,16 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		"repo":         repo,
 	}).Info("initializing secure client")
 
-	var tinfoilClient *tinfoil.Client
-	var err error
-	if enclaveHost == "" && repo == "" {
-		tinfoilClient, err = tinfoil.NewClient()
-		if err == nil {
-			enclaveHost = tinfoilClient.Enclave()
-			repo = tinfoilClient.Repo()
-		}
-	} else {
-		tinfoilClient, err = tinfoil.NewClientWithParams(enclaveHost, repo)
+	// TLS pinning keeps response bodies unencrypted at the HTTP layer, so the
+	// reverse proxy forwards accurate framing headers.
+	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportTLS)}
+	if enclaveHost != "" || repo != "" {
+		opts = append(opts, tinfoil.WithEnclave(enclaveHost), tinfoil.WithRepo(repo))
+	}
+	tinfoilClient, err := tinfoil.NewClientWithOptions(opts...)
+	if err == nil {
+		enclaveHost = tinfoilClient.Enclave()
+		repo = tinfoilClient.Repo()
 	}
 	if err != nil {
 		log.WithError(err).Error("failed to create HTTP client")
