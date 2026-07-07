@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -357,6 +358,154 @@ func TestStreamParserCapsEventDataAndRecovers(t *testing.T) {
 	parser.finalize()
 
 	recorder.assertLast(t, 5, 6)
+}
+
+func TestReloadingUpstreamRetriesAgainstNewRouter(t *testing.T) {
+	failing := &stubUpstreamTransport{err: errors.New("connection refused")}
+	healthy := &stubUpstreamTransport{}
+	buildCalls := 0
+	ru := newReloadingUpstream(
+		&upstream{host: "old.tinfoil.sh", transport: failing},
+		func() (*upstream, error) {
+			buildCalls++
+			return &upstream{host: "new.tinfoil.sh", transport: healthy}, nil
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://old.tinfoil.sh/v1/models", nil)
+	resp, err := ru.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	resp.Body.Close()
+	if buildCalls != 1 {
+		t.Fatalf("expected one rebuild, got %d", buildCalls)
+	}
+	if len(healthy.hosts) != 1 || healthy.hosts[0] != "new.tinfoil.sh" {
+		t.Fatalf("expected retry against new router, got %v", healthy.hosts)
+	}
+	if ru.get().host != "new.tinfoil.sh" {
+		t.Fatalf("expected current upstream to be swapped, got %s", ru.get().host)
+	}
+}
+
+func TestReloadingUpstreamReplaysBufferedBody(t *testing.T) {
+	failing := &stubUpstreamTransport{err: errors.New("connection reset")}
+	healthy := &stubUpstreamTransport{}
+	ru := newReloadingUpstream(
+		&upstream{host: "old.tinfoil.sh", transport: failing},
+		func() (*upstream, error) {
+			return &upstream{host: "new.tinfoil.sh", transport: healthy}, nil
+		},
+	)
+
+	payload := `{"model":"gpt-oss-120b"}`
+	req := httptest.NewRequest(http.MethodPost, "https://old.tinfoil.sh/v1/chat/completions", strings.NewReader(payload))
+	setRequestBody(req, []byte(payload))
+
+	resp, err := ru.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	resp.Body.Close()
+	if len(healthy.bodies) != 1 || healthy.bodies[0] != payload {
+		t.Fatalf("expected replayed body %q, got %v", payload, healthy.bodies)
+	}
+}
+
+func TestReloadingUpstreamReloadsWithoutRetryWhenBodyNotReplayable(t *testing.T) {
+	failing := &stubUpstreamTransport{err: errors.New("connection reset")}
+	healthy := &stubUpstreamTransport{}
+	ru := newReloadingUpstream(
+		&upstream{host: "old.tinfoil.sh", transport: failing},
+		func() (*upstream, error) {
+			return &upstream{host: "new.tinfoil.sh", transport: healthy}, nil
+		},
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "https://old.tinfoil.sh/v1/chat/completions", strings.NewReader("{}"))
+	if _, err := ru.RoundTrip(req); err == nil {
+		t.Fatal("expected original error when body cannot be replayed")
+	}
+	if len(healthy.hosts) != 0 {
+		t.Fatalf("expected no retry, got requests to %v", healthy.hosts)
+	}
+	if ru.get().host != "new.tinfoil.sh" {
+		t.Fatal("expected upstream to be reloaded for subsequent requests")
+	}
+}
+
+func TestReloadingUpstreamCoolsDownAfterFailedReload(t *testing.T) {
+	failing := &stubUpstreamTransport{err: errors.New("connection refused")}
+	buildCalls := 0
+	ru := newReloadingUpstream(
+		&upstream{host: "old.tinfoil.sh", transport: failing},
+		func() (*upstream, error) {
+			buildCalls++
+			return nil, errors.New("no routers available")
+		},
+	)
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodGet, "https://old.tinfoil.sh/v1/models", nil)
+		if _, err := ru.RoundTrip(req); err == nil {
+			t.Fatal("expected request to fail while upstream is down")
+		}
+	}
+	if buildCalls != 1 {
+		t.Fatalf("expected cooldown to allow one rebuild, got %d", buildCalls)
+	}
+}
+
+func TestReloadingUpstreamSkipsReloadWhenClientCanceled(t *testing.T) {
+	failing := &stubUpstreamTransport{err: errors.New("context canceled")}
+	buildCalls := 0
+	ru := newReloadingUpstream(
+		&upstream{host: "old.tinfoil.sh", transport: failing},
+		func() (*upstream, error) {
+			buildCalls++
+			return nil, errors.New("unexpected rebuild")
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "https://old.tinfoil.sh/v1/models", nil).WithContext(ctx)
+	if _, err := ru.RoundTrip(req); err == nil {
+		t.Fatal("expected canceled request to fail")
+	}
+	if buildCalls != 0 {
+		t.Fatalf("expected no rebuild for canceled request, got %d", buildCalls)
+	}
+}
+
+type stubUpstreamTransport struct {
+	mu     sync.Mutex
+	err    error
+	hosts  []string
+	bodies []string
+}
+
+func (s *stubUpstreamTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hosts = append(s.hosts, req.URL.Host)
+	if req.Body != nil && req.Body != http.NoBody {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		s.bodies = append(s.bodies, string(body))
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Header:     make(http.Header),
+	}, nil
 }
 
 func eventually(t *testing.T, condition func() bool) {
