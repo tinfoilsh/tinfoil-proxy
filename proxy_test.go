@@ -401,6 +401,7 @@ func TestReloadingUpstreamReplaysBufferedBody(t *testing.T) {
 
 	payload := `{"model":"gpt-oss-120b"}`
 	req := httptest.NewRequest(http.MethodPost, "https://old.tinfoil.sh/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("Idempotency-Key", "req-1")
 	setRequestBody(req, []byte(payload))
 
 	resp, err := ru.RoundTrip(req)
@@ -424,8 +425,34 @@ func TestReloadingUpstreamReloadsWithoutRetryWhenBodyNotReplayable(t *testing.T)
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "https://old.tinfoil.sh/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Idempotency-Key", "req-1")
 	if _, err := ru.RoundTrip(req); err == nil {
 		t.Fatal("expected original error when body cannot be replayed")
+	}
+	if len(healthy.hosts) != 0 {
+		t.Fatalf("expected no retry, got requests to %v", healthy.hosts)
+	}
+	if ru.get().host != "new.tinfoil.sh" {
+		t.Fatal("expected upstream to be reloaded for subsequent requests")
+	}
+}
+
+func TestReloadingUpstreamDoesNotRetryNonIdempotentRequest(t *testing.T) {
+	failing := &stubUpstreamTransport{err: errors.New("connection reset")}
+	healthy := &stubUpstreamTransport{}
+	ru := newReloadingUpstream(
+		&upstream{host: "old.tinfoil.sh", transport: failing},
+		func() (*upstream, error) {
+			return &upstream{host: "new.tinfoil.sh", transport: healthy}, nil
+		},
+	)
+
+	payload := `{"model":"gpt-oss-120b"}`
+	req := httptest.NewRequest(http.MethodPost, "https://old.tinfoil.sh/v1/chat/completions", strings.NewReader(payload))
+	setRequestBody(req, []byte(payload))
+
+	if _, err := ru.RoundTrip(req); err == nil {
+		t.Fatal("expected original error for non-idempotent request")
 	}
 	if len(healthy.hosts) != 0 {
 		t.Fatalf("expected no retry, got requests to %v", healthy.hosts)

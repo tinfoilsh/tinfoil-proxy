@@ -210,9 +210,9 @@ var errReloadCoolingDown = errors.New("upstream reload attempted too recently")
 
 // reloadingUpstream routes requests to the current upstream and, when a
 // request fails at the transport level, rebuilds the secure client (rerunning
-// router selection and attestation) and retries the request when its body can
-// be replayed. This keeps the proxy working across router rotations and
-// outages without a restart.
+// router selection and attestation) and retries the request when it is
+// idempotent and its body can be replayed. This keeps the proxy working
+// across router rotations and outages without a restart.
 type reloadingUpstream struct {
 	build func() (*upstream, error)
 
@@ -287,7 +287,22 @@ func requestForHost(req *http.Request, host string) *http.Request {
 	return out
 }
 
+// idempotentRequest mirrors net/http's request replayability rules. A
+// transport error can surface after the router already processed the request,
+// so only requests that are safe to execute twice may be retried
+// automatically.
+func idempotentRequest(req *http.Request) bool {
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	}
+	return req.Header.Get("Idempotency-Key") != "" || req.Header.Get("X-Idempotency-Key") != ""
+}
+
 func replayableRequest(req *http.Request, host string) (*http.Request, bool) {
+	if !idempotentRequest(req) {
+		return nil, false
+	}
 	retry := requestForHost(req, host)
 	if req.Body == nil || req.Body == http.NoBody {
 		return retry, true
