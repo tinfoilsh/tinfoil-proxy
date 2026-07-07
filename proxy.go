@@ -127,20 +127,8 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		tokens = newTokenCounter(emitTokenStats)
 	}
 
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = "https"
-			host := reloading.get().host
-			req.URL.Host = host
-			req.Host = host
-			if _, ok := req.Header["User-Agent"]; !ok {
-				// Match httputil.NewSingleHostReverseProxy: suppress the
-				// default Go client User-Agent instead of advertising it.
-				req.Header.Set("User-Agent", "")
-			}
-		},
-		Transport: withLoggingTransport(log.StandardLogger(), reloading, tokens),
-	}
+	cacheSecret := resolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
+	proxy := newReverseProxy(reloading, cacheSecret, tokens)
 
 	addr := bindAddress()
 	mux := http.NewServeMux()
@@ -177,6 +165,31 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	return server.Serve(listener)
+}
+
+// newReverseProxy assembles the forwarding pipeline. The logging transport
+// wraps the cache-secret injector, which wraps the reloading upstream, so the
+// injected field survives router-reselection retries and is sealed by the
+// pinned connection beneath before it leaves the machine.
+func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *tokenCounter) *httputil.ReverseProxy {
+	var transport http.RoundTripper = reloading
+	if cacheSecret != "" {
+		transport = &userCacheSecretTransport{secret: cacheSecret, transport: transport}
+	}
+	return &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "https"
+			host := reloading.get().host
+			req.URL.Host = host
+			req.Host = host
+			if _, ok := req.Header["User-Agent"]; !ok {
+				// Match httputil.NewSingleHostReverseProxy: suppress the
+				// default Go client User-Agent instead of advertising it.
+				req.Header.Set("User-Agent", "")
+			}
+		},
+		Transport: withLoggingTransport(log.StandardLogger(), transport, tokens),
+	}
 }
 
 type upstream struct {
