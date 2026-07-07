@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -22,11 +21,12 @@ import (
 )
 
 const (
-	httpReadHeaderTimeout = 30 * time.Second
-	httpIdleTimeout       = 120 * time.Second
-	httpMaxHeaderBytes    = 1 << 20
-	handshakeTimeout      = 60 * time.Second
-	maxTokenUsageBodySize = 8 << 20
+	httpReadHeaderTimeout  = 30 * time.Second
+	httpIdleTimeout        = 120 * time.Second
+	httpMaxHeaderBytes     = 1 << 20
+	handshakeTimeout       = 60 * time.Second
+	maxTokenUsageBodySize  = 8 << 20
+	upstreamReloadCooldown = 10 * time.Second
 )
 
 type readyMessage struct {
@@ -108,41 +108,38 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		"repo":         repo,
 	}).Info("initializing secure client")
 
-	// TLS pinning keeps response bodies unencrypted at the HTTP layer, so the
-	// reverse proxy forwards accurate framing headers.
-	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportTLS)}
-	if enclaveHost != "" || repo != "" {
-		opts = append(opts, tinfoil.WithEnclave(enclaveHost), tinfoil.WithRepo(repo))
-	}
-	tinfoilClient, err := tinfoil.NewClientWithOptions(opts...)
-	if err == nil {
-		enclaveHost = tinfoilClient.Enclave()
-		repo = tinfoilClient.Repo()
-	}
+	requestedEnclave, requestedRepo := enclaveHost, repo
+	initial, err := buildUpstream(requestedEnclave, requestedRepo)
 	if err != nil {
 		log.WithError(err).Error("failed to create HTTP client")
 		return err
 	}
+	enclaveHost = initial.host
+	repo = initial.repo
 	log.Debug("secure HTTP client created successfully")
 
-	targetURL, err := url.Parse("https://" + enclaveHost)
-	if err != nil {
-		log.WithError(err).Error("failed to parse upstream URL")
-		return err
-	}
+	reloading := newReloadingUpstream(initial, func() (*upstream, error) {
+		return buildUpstream(requestedEnclave, requestedRepo)
+	})
 
-	httpClient := tinfoilClient.HTTPClient()
 	var tokens *tokenCounter
 	if handshake {
 		tokens = newTokenCounter(emitTokenStats)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.Transport = withLoggingTransport(log.StandardLogger(), httpClient.Transport, tokens)
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Host = targetURL.Host
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "https"
+			host := reloading.get().host
+			req.URL.Host = host
+			req.Host = host
+			if _, ok := req.Header["User-Agent"]; !ok {
+				// Match httputil.NewSingleHostReverseProxy: suppress the
+				// default Go client User-Agent instead of advertising it.
+				req.Header.Set("User-Agent", "")
+			}
+		},
+		Transport: withLoggingTransport(log.StandardLogger(), reloading, tokens),
 	}
 
 	addr := bindAddress()
@@ -180,6 +177,145 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	return server.Serve(listener)
+}
+
+type upstream struct {
+	host      string
+	repo      string
+	transport http.RoundTripper
+}
+
+// buildUpstream verifies and pins a router. When no enclave host is pinned via
+// flags, the SDK reselects a healthy router from the router service, which is
+// what lets the proxy recover when the current router rotates or goes down.
+func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
+	// TLS pinning keeps response bodies unencrypted at the HTTP layer, so the
+	// reverse proxy forwards accurate framing headers.
+	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportTLS)}
+	if requestedEnclave != "" || requestedRepo != "" {
+		opts = append(opts, tinfoil.WithEnclave(requestedEnclave), tinfoil.WithRepo(requestedRepo))
+	}
+	tinfoilClient, err := tinfoil.NewClientWithOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &upstream{
+		host:      tinfoilClient.Enclave(),
+		repo:      tinfoilClient.Repo(),
+		transport: tinfoilClient.HTTPClient().Transport,
+	}, nil
+}
+
+var errReloadCoolingDown = errors.New("upstream reload attempted too recently")
+
+// reloadingUpstream routes requests to the current upstream and, when a
+// request fails at the transport level, rebuilds the secure client (rerunning
+// router selection and attestation) and retries the request when it is
+// idempotent and its body can be replayed. This keeps the proxy working
+// across router rotations and outages without a restart.
+type reloadingUpstream struct {
+	build func() (*upstream, error)
+
+	mu      sync.RWMutex
+	current *upstream
+
+	reloadMu    sync.Mutex
+	lastAttempt time.Time
+}
+
+func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
+	return &reloadingUpstream{build: build, current: initial}
+}
+
+func (r *reloadingUpstream) get() *upstream {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.current
+}
+
+func (r *reloadingUpstream) RoundTrip(req *http.Request) (*http.Response, error) {
+	current := r.get()
+	resp, err := current.transport.RoundTrip(requestForHost(req, current.host))
+	if err == nil || req.Context().Err() != nil {
+		return resp, err
+	}
+
+	next, reloadErr := r.reload(current)
+	if reloadErr != nil {
+		return nil, err
+	}
+	retry, ok := replayableRequest(req, next.host)
+	if !ok {
+		return nil, err
+	}
+	return next.transport.RoundTrip(retry)
+}
+
+// reload swaps in a freshly verified upstream. Concurrent failing requests
+// serialize here so only one rebuild runs, and a cooldown prevents hammering
+// the router service and attestation endpoints when upstream stays down.
+func (r *reloadingUpstream) reload(failed *upstream) (*upstream, error) {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+
+	current := r.get()
+	if current != failed {
+		return current, nil
+	}
+	if time.Since(r.lastAttempt) < upstreamReloadCooldown {
+		return nil, errReloadCoolingDown
+	}
+	r.lastAttempt = time.Now()
+
+	log.WithField("enclave_host", failed.host).Warn("upstream request failed, reselecting router")
+	next, err := r.build()
+	if err != nil {
+		log.WithError(err).Error("router reselection failed")
+		return nil, err
+	}
+	r.mu.Lock()
+	r.current = next
+	r.mu.Unlock()
+	log.WithField("enclave_host", next.host).Info("router reselection succeeded")
+	return next, nil
+}
+
+func requestForHost(req *http.Request, host string) *http.Request {
+	out := req.Clone(req.Context())
+	out.URL.Host = host
+	out.Host = host
+	return out
+}
+
+// idempotentRequest mirrors net/http's request replayability rules. A
+// transport error can surface after the router already processed the request,
+// so only requests that are safe to execute twice may be retried
+// automatically.
+func idempotentRequest(req *http.Request) bool {
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	}
+	return req.Header.Get("Idempotency-Key") != "" || req.Header.Get("X-Idempotency-Key") != ""
+}
+
+func replayableRequest(req *http.Request, host string) (*http.Request, bool) {
+	if !idempotentRequest(req) {
+		return nil, false
+	}
+	retry := requestForHost(req, host)
+	if req.Body == nil || req.Body == http.NoBody {
+		return retry, true
+	}
+	if req.GetBody == nil {
+		return nil, false
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, false
+	}
+	retry.Body = body
+	return retry, true
 }
 
 func allowedHosts(addr string) map[string]struct{} {
