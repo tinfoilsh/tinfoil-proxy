@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -487,8 +488,17 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 	}
 	setRequestBody(req, body)
 
+	if !utf8.Valid(body) {
+		// encoding/json would coerce invalid UTF-8 inside strings to U+FFFD
+		// on re-marshal, corrupting the client's bytes: forward untouched.
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// Preserve number precision across the re-marshal: int64-range values
+	// such as seed would otherwise round-trip through float64 and corrupt.
+	dec.UseNumber()
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := dec.Decode(&payload); err != nil || !decodeConsumedAll(dec) {
 		return nil
 	}
 	stream, ok := payload["stream"].(bool)

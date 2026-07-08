@@ -368,6 +368,74 @@ func TestUserCacheSecretTransportNonObjectBodies(t *testing.T) {
 	}
 }
 
+func TestUserCacheSecretTransportSkipsInvalidUTF8(t *testing.T) {
+	// encoding/json accepts invalid UTF-8 inside strings but re-marshals each
+	// bad byte as U+FFFD, which would silently corrupt the client's message
+	// content in transit. Such bodies must pass through byte-identical.
+	capture := &captureRoundTripper{}
+	transport := &userCacheSecretTransport{secret: "s1", transport: capture}
+	raw := "{\"model\":\"m\",\"content\":\"\xff\xfe\"}"
+	if _, err := transport.RoundTrip(postJSONRequest(t, "https://enclave.example.com/v1/chat/completions", raw)); err != nil {
+		t.Fatal(err)
+	}
+	if string(capture.body) != raw {
+		t.Fatalf("a body with invalid UTF-8 must pass through byte-identical, got %q", capture.body)
+	}
+}
+
+func TestUserCacheSecretTransportCapsBufferedBodies(t *testing.T) {
+	t.Run("declared oversize body streams through untouched", func(t *testing.T) {
+		capture := &captureRoundTripper{}
+		transport := &userCacheSecretTransport{secret: "s1", transport: capture}
+		const raw = `{"model":"m"}`
+		req := postJSONRequest(t, "https://enclave.example.com/v1/chat/completions", raw)
+		req.ContentLength = maxUserCacheSecretBodySize + 1
+		if _, err := transport.RoundTrip(req); err != nil {
+			t.Fatal(err)
+		}
+		if capture.req != req {
+			t.Fatal("an oversize body must be forwarded without cloning or buffering")
+		}
+		if string(capture.body) != raw {
+			t.Fatalf("expected the body to pass through byte-identical, got %q", capture.body)
+		}
+	})
+
+	t.Run("chunked body over the cap forwards byte-identical without injection", func(t *testing.T) {
+		capture := &captureRoundTripper{}
+		transport := &userCacheSecretTransport{secret: "s1", transport: capture}
+		// A valid JSON object bigger than the cap: without the limit this
+		// would be parsed and injected; with it, the buffered prefix must be
+		// stitched back onto the stream and forwarded untouched.
+		raw := `{"model":"m","pad":"` + strings.Repeat("A", maxUserCacheSecretBodySize) + `"}`
+		req := postJSONRequest(t, "https://enclave.example.com/v1/chat/completions", raw)
+		req.ContentLength = -1 // chunked: length unknown up front
+		if _, err := transport.RoundTrip(req); err != nil {
+			t.Fatal(err)
+		}
+		if string(capture.body) != raw {
+			t.Fatal("expected the oversize chunked body to pass through byte-identical")
+		}
+	})
+
+	t.Run("chunked body within the cap still gets injection", func(t *testing.T) {
+		capture := &captureRoundTripper{}
+		transport := &userCacheSecretTransport{secret: "s1", transport: capture}
+		req := postJSONRequest(t, "https://enclave.example.com/v1/chat/completions", `{"model":"m"}`)
+		req.ContentLength = -1
+		if _, err := transport.RoundTrip(req); err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(capture.body, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body[userCacheSecretField] != "s1" {
+			t.Fatalf("expected the secret to be injected, got %v", body[userCacheSecretField])
+		}
+	})
+}
+
 func TestUserCacheSecretTransportAllowsTrailingWhitespace(t *testing.T) {
 	// Trailing whitespace is not trailing data: strict JSON parsers accept
 	// it, so the injection must too — clients routinely end bodies with \n.

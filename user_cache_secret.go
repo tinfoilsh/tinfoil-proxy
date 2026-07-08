@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -60,6 +61,13 @@ const (
 	// cache namespace across tools.
 	userCacheSecretDirName  = ".tinfoil"
 	userCacheSecretFileName = "user_cache_secret"
+
+	// maxUserCacheSecretBodySize caps how much of a forwarded body the
+	// injector buffers for parsing, mirroring the token-usage rewrite's cap.
+	// Anything larger keeps streaming through untouched (tenant-wide caching)
+	// instead of ballooning the proxy's memory — unlike the SDKs, the proxy
+	// forwards arbitrary local-client bytes, so bodies here are unbounded.
+	maxUserCacheSecretBodySize = maxTokenUsageBodySize
 )
 
 // userCacheSecretPaths are the OpenAI-compatible endpoints whose bodies carry
@@ -180,12 +188,26 @@ func (t *userCacheSecretTransport) RoundTrip(req *http.Request) (*http.Response,
 	if t.secret == "" || !userCacheSecretPathEligible(req) {
 		return t.transport.RoundTrip(req)
 	}
+	if req.ContentLength > maxUserCacheSecretBodySize {
+		// Too large to parse: forward the stream untouched rather than
+		// buffering it.
+		return t.transport.RoundTrip(req)
+	}
 
-	raw, err := io.ReadAll(req.Body)
-	req.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(req.Body, maxUserCacheSecretBodySize+1))
 	if err != nil {
+		req.Body.Close()
 		return nil, err
 	}
+	if len(raw) > maxUserCacheSecretBodySize {
+		// A chunked (or mis-declared) body larger than the cap: stitch the
+		// buffered prefix back onto the remaining stream and forward it
+		// untouched, so large uploads are never held in memory here.
+		out := req.Clone(req.Context())
+		out.Body = readCloser{io.MultiReader(bytes.NewReader(raw), req.Body), req.Body}
+		return t.transport.RoundTrip(out)
+	}
+	req.Body.Close()
 
 	newBody, changed := injectUserCacheSecret(raw, t.secret)
 	out := req.Clone(req.Context())
@@ -205,6 +227,13 @@ func (t *userCacheSecretTransport) RoundTrip(req *http.Request) (*http.Response,
 		return io.NopCloser(bytes.NewReader(newBody)), nil
 	}
 	return t.transport.RoundTrip(out)
+}
+
+// readCloser pairs a stitched-together reader with the closer of the
+// underlying client body.
+type readCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // userCacheSecretPathEligible reports whether the request can carry the field:
@@ -227,6 +256,13 @@ func userCacheSecretPathEligible(req *http.Request) bool {
 // bytes — for non-object bodies, trailing data, or a body that already carries
 // the field.
 func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
+	if !utf8.Valid(raw) {
+		// encoding/json tolerates invalid UTF-8 inside strings but coerces
+		// each bad byte to U+FFFD on re-marshal, silently corrupting the
+		// client's bytes. RFC 8259 requires UTF-8, so treat such bodies like
+		// any other malformed body: forward them untouched.
+		return nil, false
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var body map[string]any

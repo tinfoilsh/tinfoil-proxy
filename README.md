@@ -115,6 +115,8 @@ Clients that hold many end users' conversations should scope per request instead
 {"model": "gpt-oss-120b", "messages": [], "user_cache_secret": "<per-user secret>"}
 ```
 
+Forwarded bodies that are not a single well-formed JSON object — or that exceed 8 MiB — are passed through byte-identical without injection, so those requests fall back to tenant-wide caching.
+
 If the secret cannot be persisted (no home directory, read-only filesystem), the proxy falls back to an in-memory secret and warns once: cache continuity then resets on every restart. Containerized deployments should set `TINFOIL_USER_CACHE_SECRET` explicitly — one value per end user if requests are per-user, or empty to keep tenant-wide caching across replicas.
 
 ## Menu-bar app
