@@ -71,13 +71,14 @@ const (
 )
 
 // userCacheSecretPaths are the OpenAI-compatible endpoints whose bodies carry
-// the field. Matched by suffix so a client that prefixes the path still
-// qualifies. Other endpoints (embeddings, audio, files) are excluded: their
-// engines do not prefix-cache and may reject unknown fields.
+// the field. Matched by suffix with no /v1 requirement so custom base URLs
+// (path-prefixed proxies or /v1-less roots) still qualify. Other endpoints
+// (embeddings, audio, files) are excluded: their engines do not prefix-cache
+// and may reject unknown fields.
 var userCacheSecretPaths = []string{
-	"/v1/chat/completions",
-	"/v1/completions",
-	"/v1/responses",
+	"/chat/completions",
+	"/completions",
+	"/responses",
 }
 
 // resolveUserCacheSecret resolves the proxy-level secret: the explicit flag

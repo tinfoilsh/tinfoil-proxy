@@ -229,6 +229,7 @@ func TestUserCacheSecretTransportInjects(t *testing.T) {
 		"/v1/completions",
 		"/v1/responses",
 		"/api/v1/chat/completions", // client base URL with a path prefix
+		"/chat/completions",        // client base URL without a /v1 root
 	}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
@@ -280,14 +281,16 @@ func TestUserCacheSecretTransportInjects(t *testing.T) {
 
 func TestUserCacheSecretTransportSkipsIneligibleRequests(t *testing.T) {
 	t.Run("non-allowlisted endpoint forwards the body untouched", func(t *testing.T) {
-		capture := &captureRoundTripper{}
-		transport := &userCacheSecretTransport{secret: "s1", transport: capture}
-		const raw = `{"model":"m","input":"text"}`
-		if _, err := transport.RoundTrip(postJSONRequest(t, "https://enclave.example.com/v1/embeddings", raw)); err != nil {
-			t.Fatal(err)
-		}
-		if string(capture.body) != raw {
-			t.Fatalf("expected the body to pass through byte-identical, got %q", capture.body)
+		for _, path := range []string{"/v1/embeddings", "/embeddings"} {
+			capture := &captureRoundTripper{}
+			transport := &userCacheSecretTransport{secret: "s1", transport: capture}
+			const raw = `{"model":"m","input":"text"}`
+			if _, err := transport.RoundTrip(postJSONRequest(t, "https://enclave.example.com"+path, raw)); err != nil {
+				t.Fatal(err)
+			}
+			if string(capture.body) != raw {
+				t.Fatalf("expected the body to pass through byte-identical for %s, got %q", path, capture.body)
+			}
 		}
 	})
 
