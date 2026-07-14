@@ -37,7 +37,7 @@ func TestUserCacheSecretFlagExplicitEmptyCountsAsSet(t *testing.T) {
 
 	// The explicit empty flag disables provisioning despite the environment.
 	t.Setenv(tinfoil.UserCacheSecretEnv, "from-env")
-	if got := tinfoil.ResolveUserCacheSecret(userCacheSecret, flag.Changed); got != "" {
+	if got := resolveProxyUserCacheSecret(userCacheSecret, flag.Changed); got != "" {
 		t.Fatalf("expected an explicit empty flag to disable provisioning, got %q", got)
 	}
 }

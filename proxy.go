@@ -128,7 +128,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		tokens = newTokenCounter(emitTokenStats)
 	}
 
-	cacheSecret := tinfoil.ResolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
+	cacheSecret := resolveProxyUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
 	proxy := newReverseProxy(reloading, cacheSecret, tokens)
 
 	addr := bindAddress()

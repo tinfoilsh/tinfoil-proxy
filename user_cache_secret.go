@@ -18,7 +18,7 @@ import (
 //
 // Resolution (flag, then TINFOIL_USER_CACHE_SECRET, then the secret persisted
 // at ~/.tinfoil/user_cache_secret shared with the Tinfoil SDKs) and the JSON
-// injection rules are the SDK's: the proxy calls tinfoil.ResolveUserCacheSecret
+// injection rules are the SDK's: the proxy calls tinfoil.DefaultUserCacheSecret
 // and tinfoil.InjectUserCacheSecret. Only the transport below is proxy-specific,
 // because the proxy forwards arbitrary local-client bodies that the SDK's own
 // injector does not mutate: they are not replayable in-memory buffers and their
@@ -41,6 +41,13 @@ const (
 	// forwards arbitrary local-client bytes, so bodies here are unbounded.
 	maxUserCacheSecretBodySize = maxTokenUsageBodySize
 )
+
+func resolveProxyUserCacheSecret(explicit string, explicitSet bool) string {
+	if explicitSet {
+		return explicit
+	}
+	return tinfoil.DefaultUserCacheSecret()
+}
 
 // userCacheSecretTransport injects the proxy-level secret into forwarded
 // request bodies on the way out. It sits above the reloading upstream and the
