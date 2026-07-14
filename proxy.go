@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -127,20 +128,8 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		tokens = newTokenCounter(emitTokenStats)
 	}
 
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = "https"
-			host := reloading.get().host
-			req.URL.Host = host
-			req.Host = host
-			if _, ok := req.Header["User-Agent"]; !ok {
-				// Match httputil.NewSingleHostReverseProxy: suppress the
-				// default Go client User-Agent instead of advertising it.
-				req.Header.Set("User-Agent", "")
-			}
-		},
-		Transport: withLoggingTransport(log.StandardLogger(), reloading, tokens),
-	}
+	cacheSecret := resolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
+	proxy := newReverseProxy(reloading, cacheSecret, tokens)
 
 	addr := bindAddress()
 	mux := http.NewServeMux()
@@ -177,6 +166,31 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	return server.Serve(listener)
+}
+
+// newReverseProxy assembles the forwarding pipeline. The logging transport
+// wraps the cache-secret injector, which wraps the reloading upstream, so the
+// injected field survives router-reselection retries and is sealed by the
+// pinned connection beneath before it leaves the machine.
+func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *tokenCounter) *httputil.ReverseProxy {
+	var transport http.RoundTripper = reloading
+	if cacheSecret != "" {
+		transport = &userCacheSecretTransport{secret: cacheSecret, transport: transport}
+	}
+	return &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "https"
+			host := reloading.get().host
+			req.URL.Host = host
+			req.Host = host
+			if _, ok := req.Header["User-Agent"]; !ok {
+				// Match httputil.NewSingleHostReverseProxy: suppress the
+				// default Go client User-Agent instead of advertising it.
+				req.Header.Set("User-Agent", "")
+			}
+		},
+		Transport: withLoggingTransport(log.StandardLogger(), transport, tokens),
+	}
 }
 
 type upstream struct {
@@ -474,8 +488,17 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 	}
 	setRequestBody(req, body)
 
+	if !utf8.Valid(body) {
+		// encoding/json would coerce invalid UTF-8 inside strings to U+FFFD
+		// on re-marshal, corrupting the client's bytes: forward untouched.
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// Preserve number precision across the re-marshal: int64-range values
+	// such as seed would otherwise round-trip through float64 and corrupt.
+	dec.UseNumber()
 	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := dec.Decode(&payload); err != nil || !decodeConsumedAll(dec) {
 		return nil
 	}
 	stream, ok := payload["stream"].(bool)

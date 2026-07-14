@@ -235,6 +235,58 @@ func TestEnsureStreamUsageIncludedPreservesExplicitIncludeUsage(t *testing.T) {
 	}
 }
 
+func TestEnsureStreamUsageIncludedPreservesNumberPrecision(t *testing.T) {
+	// 2^53+1 is not representable as float64; a plain unmarshal/marshal
+	// round-trip would rewrite it as 9007199254740992.
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://127.0.0.1:3301/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-oss-120b","stream":true,"messages":[],"seed":9007199254740993}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	if err := ensureStreamUsageIncluded(req); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updated), `"seed":9007199254740993`) {
+		t.Fatalf("expected the seed to survive the rewrite, got %s", updated)
+	}
+	if !strings.Contains(string(updated), `"include_usage":true`) {
+		t.Fatalf("expected include_usage to be added, got %s", updated)
+	}
+}
+
+func TestEnsureStreamUsageIncludedForwardsMalformedBodiesUntouched(t *testing.T) {
+	for name, body := range map[string]string{
+		"trailing data": `{"model":"gpt-oss-120b","stream":true,"messages":[]} garbage`,
+		"invalid UTF-8": "{\"model\":\"gpt-oss-120b\",\"stream\":true,\"content\":\"\xff\xfe\"}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"http://127.0.0.1:3301/v1/chat/completions",
+				strings.NewReader(body),
+			)
+			req.Header.Set("Content-Type", "application/json")
+
+			if err := ensureStreamUsageIncluded(req); err != nil {
+				t.Fatal(err)
+			}
+			updated, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(updated) != body {
+				t.Fatalf("expected the body to stay byte-identical, got %s", updated)
+			}
+		})
+	}
+}
+
 func TestLoggingTransportDoesNotProxyAfterUsageRequestReadError(t *testing.T) {
 	readErr := errors.New("partial read")
 	req := httptest.NewRequest(

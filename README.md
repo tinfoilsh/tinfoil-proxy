@@ -8,7 +8,7 @@ A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. I
 
 The proxy and the desktop app are independent. Most people only need the proxy.
 
-- **The proxy (repo root)** — a tiny, self-contained Go program. Two source files (`main.go`, `proxy.go`), three direct dependencies, compiled to a single static binary with no runtime requirements. This is the whole proxy. It's all you need for scripts, CI, servers, and any OpenAI-compatible client.
+- **The proxy (repo root)** — a tiny, self-contained Go program. Three source files (`main.go`, `proxy.go`, `user_cache_secret.go`), three direct dependencies, compiled to a single static binary with no runtime requirements. This is the whole proxy. It's all you need for scripts, CI, servers, and any OpenAI-compatible client.
 - **The menu-bar app (`app/`)** — an *optional* Electron desktop wrapper that runs the exact same proxy binary with start/stop buttons and live verification status. Everything Electron, Node.js, and the build tooling lives under `app/`. If you don't want a desktop app, you can ignore that whole folder.
 
 > The Electron/Node.js footprint lives entirely in `app/`, **not** at the root. The proxy itself is lightweight: a single Go binary that does verification and forwarding, nothing more.
@@ -21,6 +21,7 @@ Both serve the same endpoint with the same attestation, because the app just lau
 .                      The proxy (lightweight Go binary) — the core
   main.go              CLI entrypoint, flags, bind handling
   proxy.go             attestation, reverse proxy, local-only guard
+  user_cache_secret.go per-user prompt-cache scoping for forwarded requests
   go.mod / go.sum      3 direct deps, builds with CGO disabled
   Dockerfile           container image for the binary
   install.sh           downloads the released binary
@@ -84,10 +85,39 @@ tinfoil-proxy -e inference.tinfoil.sh -r tinfoilsh/confidential-model-router -p 
 | `-e, --host` | auto | Pin a specific enclave hostname (set with `-r`) |
 | `-r, --repo` | auto | Pin a specific config repo (set with `-e`) |
 | `--log-format` | `text` | `text` or `json` |
+| `--user-cache-secret` | generated | Prompt-cache scoping secret — see [Prompt Cache Scoping](#prompt-cache-scoping) |
 | `-v, --verbose` | off | Verbose output |
 | `-t, --trace` | off | Trace output |
 
 Once it's running, the endpoint is just a regular OpenAI-compatible base URL — see the [coding agents guide](https://docs.tinfoil.sh/tutorials/coding-agents) for plug-and-play setups, or the [CLI docs](https://docs.tinfoil.sh/local-proxy/cli) for the full reference.
+
+## Prompt Cache Scoping
+
+The inference router partitions its prompt cache per API identity, so your cached prompts are never observable by other tenants. Within your tenant, the proxy scopes caching further with a `user_cache_secret`: requests carrying the same secret share cached prompt prefixes, requests carrying different secrets cannot observe each other's cache timing. The secret never reaches the model — the router consumes it to derive the cache namespace and strips it from the request.
+
+By default the proxy generates a random secret and persists it at `~/.tinfoil/user_cache_secret` (mode `0600`, shared with the Tinfoil SDKs on the same machine), so caching just works with per-machine scoping. You can control it explicitly:
+
+```sh
+# Pin the secret for every request this proxy forwards
+tinfoil-proxy --user-cache-secret "$SECRET"
+
+# Or provision it via the environment
+#   TINFOIL_USER_CACHE_SECRET=<secret>   use this value
+#   TINFOIL_USER_CACHE_SECRET=           (set but empty) disable: tenant-wide caching
+
+# Opt out entirely (tenant-wide caching, no file written)
+tinfoil-proxy --user-cache-secret ""
+```
+
+Clients that hold many end users' conversations should scope per request instead; a `user_cache_secret` field already present in a forwarded body always wins over the proxy-level secret (an explicit empty string opts that request out):
+
+```json
+{"model": "gpt-oss-120b", "messages": [], "user_cache_secret": "<per-user secret>"}
+```
+
+Forwarded bodies that are not a single well-formed JSON object — or that exceed 8 MiB — are passed through byte-identical without injection, so those requests fall back to tenant-wide caching.
+
+If the secret cannot be persisted (no home directory, read-only filesystem), the proxy falls back to an in-memory secret and warns once: cache continuity then resets on every restart. Containerized deployments should set `TINFOIL_USER_CACHE_SECRET` explicitly — one value per end user if requests are per-user, or empty to keep tenant-wide caching across replicas.
 
 ## Menu-bar app
 
