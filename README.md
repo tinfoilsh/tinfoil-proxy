@@ -107,7 +107,7 @@ tinfoil-proxy --user-cache-secret "$SECRET"
 TINFOIL_USER_CACHE_SECRET="$SECRET" tinfoil-proxy
 ```
 
-On eligible request bodies, the proxy adds its resolved secret when `user_cache_secret` is absent and replaces an empty string with that secret. Non-empty strings and non-string values remain caller-owned and pass through unchanged.
+On eligible request bodies, the proxy adds its resolved secret when `user_cache_secret` is absent and replaces an empty string with that secret. Non-empty strings and non-string values remain caller-owned and pass through unchanged. Normalization applies only when every top-level field appears once; bodies with duplicate top-level keys are ambiguous and pass through unchanged, even if a `user_cache_secret` value is empty.
 
 Multi-user services must supply a stable, non-empty, opaque per-user or per-group `user_cache_secret` on every eligible request. Do not rely on the proxy-level default for user separation:
 

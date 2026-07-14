@@ -367,12 +367,14 @@ func TestUserCacheSecretTransportReplacesEmptyString(t *testing.T) {
 	}
 }
 
-func TestUserCacheSecretTransportPreservesDuplicateTargetFields(t *testing.T) {
+func TestUserCacheSecretTransportPreservesDuplicateFields(t *testing.T) {
 	for _, raw := range []string{
 		`{"user_cache_secret":"","user_cache_secret":"caller"}`,
 		`{"user_cache_secret":"caller","user_cache_secret":""}`,
 		`{"user_cache_secret":"","user_cache_secret":""}`,
 		`{"user_cache_secret":null,"user_cache_secret":""}`,
+		`{"model":"a","model":"b"}`,
+		`{"model":"a","model":"b","user_cache_secret":""}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
 			capture := &captureRoundTripper{}
@@ -381,7 +383,7 @@ func TestUserCacheSecretTransportPreservesDuplicateTargetFields(t *testing.T) {
 				t.Fatal(err)
 			}
 			if string(capture.body) != raw {
-				t.Fatalf("an ambiguous duplicate target field must pass through byte-identical, got %q", capture.body)
+				t.Fatalf("an ambiguous duplicate field must pass through byte-identical, got %q", capture.body)
 			}
 		})
 	}

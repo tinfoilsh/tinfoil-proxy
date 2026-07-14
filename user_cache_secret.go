@@ -258,7 +258,8 @@ func userCacheSecretPathEligible(req *http.Request) bool {
 // JSON-object body. Non-empty strings and non-string values remain
 // caller-owned. RawMessage preserves number precision across the re-marshal.
 // It reports false — forward the original bytes — for non-object bodies,
-// trailing data, caller-owned values, or duplicate target fields.
+// trailing data, caller-owned values, or duplicate top-level fields, whose
+// re-marshal would otherwise silently collapse caller data.
 func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
 	if !utf8.Valid(raw) {
 		// encoding/json tolerates invalid UTF-8 inside strings but coerces
@@ -274,7 +275,6 @@ func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
 	}
 
 	body := make(map[string]json.RawMessage)
-	targetCount := 0
 	targetIsEmptyString := false
 	for dec.More() {
 		key, err := dec.Token()
@@ -289,9 +289,11 @@ func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
 		if err := dec.Decode(&value); err != nil {
 			return nil, false
 		}
+		if _, duplicate := body[name]; duplicate {
+			return nil, false
+		}
 		body[name] = value
 		if name == userCacheSecretField {
-			targetCount++
 			var stringValue *string
 			targetIsEmptyString = json.Unmarshal(value, &stringValue) == nil && stringValue != nil && *stringValue == ""
 		}
@@ -300,7 +302,7 @@ func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
 		return nil, false
 	}
 
-	if targetCount > 1 || targetCount == 1 && !targetIsEmptyString {
+	if _, present := body[userCacheSecretField]; present && !targetIsEmptyString {
 		return nil, false
 	}
 	encodedSecret, err := json.Marshal(secret)
