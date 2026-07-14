@@ -7,22 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-)
 
-// unsetUserCacheSecretEnv removes TINFOIL_USER_CACHE_SECRET for the test (the
-// developer's shell may set it) and restores it afterwards.
-func unsetUserCacheSecretEnv(t *testing.T) {
-	t.Helper()
-	t.Setenv(userCacheSecretEnv, "placeholder") // registers restoration
-	if err := os.Unsetenv(userCacheSecretEnv); err != nil {
-		t.Fatal(err)
-	}
-}
+	"github.com/tinfoilsh/tinfoil-go"
+)
 
 func TestUserCacheSecretFlagExplicitEmptyCountsAsSet(t *testing.T) {
 	flag := rootCmd.Flags().Lookup(userCacheSecretFlag)
@@ -46,147 +36,9 @@ func TestUserCacheSecretFlagExplicitEmptyCountsAsSet(t *testing.T) {
 	}
 
 	// The explicit empty flag disables provisioning despite the environment.
-	t.Setenv(userCacheSecretEnv, "from-env")
-	if got := resolveUserCacheSecret(userCacheSecret, flag.Changed); got != "" {
+	t.Setenv(tinfoil.UserCacheSecretEnv, "from-env")
+	if got := tinfoil.ResolveUserCacheSecret(userCacheSecret, flag.Changed); got != "" {
 		t.Fatalf("expected an explicit empty flag to disable provisioning, got %q", got)
-	}
-}
-
-func TestResolveUserCacheSecretPrecedence(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	t.Run("explicit flag beats environment", func(t *testing.T) {
-		t.Setenv(userCacheSecretEnv, "from-env")
-		if got := resolveUserCacheSecret("explicit", true); got != "explicit" {
-			t.Fatalf("expected the explicit secret to win, got %q", got)
-		}
-	})
-
-	t.Run("explicit empty disables even with environment set", func(t *testing.T) {
-		t.Setenv(userCacheSecretEnv, "from-env")
-		if got := resolveUserCacheSecret("", true); got != "" {
-			t.Fatalf("expected an empty secret, got %q", got)
-		}
-	})
-
-	t.Run("environment beats generation and touches no file", func(t *testing.T) {
-		t.Setenv(userCacheSecretEnv, "from-env")
-		if got := resolveUserCacheSecret("", false); got != "from-env" {
-			t.Fatalf("expected the environment secret, got %q", got)
-		}
-		if _, err := os.Stat(filepath.Join(home, userCacheSecretDirName)); !os.IsNotExist(err) {
-			t.Fatalf("an environment-provided secret must not create the secret file, stat err = %v", err)
-		}
-	})
-
-	t.Run("environment set but empty disables generation", func(t *testing.T) {
-		t.Setenv(userCacheSecretEnv, "")
-		if got := resolveUserCacheSecret("", false); got != "" {
-			t.Fatalf("expected an empty secret, got %q", got)
-		}
-		if _, err := os.Stat(filepath.Join(home, userCacheSecretDirName)); !os.IsNotExist(err) {
-			t.Fatalf("a disabled secret must not create the secret file, stat err = %v", err)
-		}
-	})
-}
-
-func TestUserCacheSecretGenerateAndPersist(t *testing.T) {
-	unsetUserCacheSecretEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	first := resolveUserCacheSecret("", false)
-	if len(first) != 64 {
-		t.Fatalf("expected a hex-encoded 256-bit secret, got %d chars: %q", len(first), first)
-	}
-
-	path := filepath.Join(home, userCacheSecretDirName, userCacheSecretFileName)
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("expected file mode 0600, got %04o", perm)
-	}
-
-	// A second resolution (a restart, or another Tinfoil SDK on the same
-	// machine) must reuse the persisted secret, not mint a new namespace.
-	if second := resolveUserCacheSecret("", false); second != first {
-		t.Fatalf("expected the persisted secret to be reused, got %q then %q", first, second)
-	}
-}
-
-func TestUserCacheSecretAdoptsExistingFile(t *testing.T) {
-	unsetUserCacheSecretEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	dir := filepath.Join(home, userCacheSecretDirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// Trailing newline: the file may be hand-edited or written by another SDK.
-	if err := os.WriteFile(filepath.Join(dir, userCacheSecretFileName), []byte("shared-secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := resolveUserCacheSecret("", false); got != "shared-secret" {
-		t.Fatalf("expected the existing secret to be adopted, got %q", got)
-	}
-}
-
-func TestUserCacheSecretRewritesBlankFile(t *testing.T) {
-	unsetUserCacheSecretEnv(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	dir := filepath.Join(home, userCacheSecretDirName)
-	path := filepath.Join(dir, userCacheSecretFileName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	secret := resolveUserCacheSecret("", false)
-	if len(secret) != 64 {
-		t.Fatalf("expected a fresh 64-char secret, got %q", secret)
-	}
-
-	written, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.TrimSpace(string(written)); got != secret {
-		t.Fatalf("a blank file must be replaced with the generated secret, got %q", got)
-	}
-}
-
-func TestUserCacheSecretFallsBackWithoutHome(t *testing.T) {
-	unsetUserCacheSecretEnv(t)
-	t.Setenv("HOME", "")
-
-	first := resolveUserCacheSecret("", false)
-	if first == "" {
-		t.Fatal("no home directory must still yield a process-lifetime secret")
-	}
-	if second := resolveUserCacheSecret("", false); second != first {
-		t.Fatalf("the in-memory fallback must be stable within the process, got %q then %q", first, second)
-	}
-}
-
-func TestUserCacheSecretFallsBackWhenHomeNotADirectory(t *testing.T) {
-	unsetUserCacheSecretEnv(t)
-	homeFile := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(homeFile, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", homeFile)
-
-	if got := resolveUserCacheSecret("", false); got == "" {
-		t.Fatal("an unwritable home must still yield a process-lifetime secret")
 	}
 }
 
@@ -248,8 +100,8 @@ func TestUserCacheSecretTransportInjects(t *testing.T) {
 			if err := json.Unmarshal(capture.body, &body); err != nil {
 				t.Fatal(err)
 			}
-			if body[userCacheSecretField] != "s1" {
-				t.Fatalf("expected the secret to be injected, got %v", body[userCacheSecretField])
+			if body[tinfoil.UserCacheSecretField] != "s1" {
+				t.Fatalf("expected the secret to be injected, got %v", body[tinfoil.UserCacheSecretField])
 			}
 
 			// Length metadata and the replayable body must describe the
@@ -433,8 +285,8 @@ func TestUserCacheSecretTransportCapsBufferedBodies(t *testing.T) {
 		if err := json.Unmarshal(capture.body, &body); err != nil {
 			t.Fatal(err)
 		}
-		if body[userCacheSecretField] != "s1" {
-			t.Fatalf("expected the secret to be injected, got %v", body[userCacheSecretField])
+		if body[tinfoil.UserCacheSecretField] != "s1" {
+			t.Fatalf("expected the secret to be injected, got %v", body[tinfoil.UserCacheSecretField])
 		}
 	})
 }
@@ -453,8 +305,8 @@ func TestUserCacheSecretTransportAllowsTrailingWhitespace(t *testing.T) {
 	if err := json.Unmarshal(capture.body, &body); err != nil {
 		t.Fatal(err)
 	}
-	if body[userCacheSecretField] != "s1" {
-		t.Fatalf("expected the secret to be injected, got %v", body[userCacheSecretField])
+	if body[tinfoil.UserCacheSecretField] != "s1" {
+		t.Fatalf("expected the secret to be injected, got %v", body[tinfoil.UserCacheSecretField])
 	}
 }
 
@@ -538,8 +390,8 @@ func TestUserCacheSecretThroughProxy(t *testing.T) {
 	if err := json.Unmarshal([]byte(record.bodies[0]), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body[userCacheSecretField] != "proxy-level" {
-		t.Fatalf("expected the proxy-level secret to be injected, got %v", body[userCacheSecretField])
+	if body[tinfoil.UserCacheSecretField] != "proxy-level" {
+		t.Fatalf("expected the proxy-level secret to be injected, got %v", body[tinfoil.UserCacheSecretField])
 	}
 	if len(record.hosts) != 1 || record.hosts[0] != "router.tinfoil.sh" {
 		t.Fatalf("expected the request to target the pinned router, got %v", record.hosts)
