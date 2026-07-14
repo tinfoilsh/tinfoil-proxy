@@ -28,12 +28,15 @@ import (
 //
 // Resolution order, mirroring the Tinfoil SDKs:
 //
-//  1. a `user_cache_secret` field the local client already sent (never
-//     overwritten here),
+//  1. a non-empty `user_cache_secret` string or non-string value the local
+//     client already sent (never overwritten here),
 //  2. the --user-cache-secret flag,
 //  3. the TINFOIL_USER_CACHE_SECRET environment variable,
 //  4. a generated secret persisted at ~/.tinfoil/user_cache_secret (0600),
 //     shared with the Tinfoil SDKs on the same machine.
+//
+// Empty strings are treated as unset at every level: an empty request field
+// is replaced, while empty flag and environment values fall through.
 //
 // Injection happens in the forwarding transport, above the SDK's pinned
 // connection, so the field travels inside the sealed channel and is only ever
@@ -41,19 +44,18 @@ import (
 
 const (
 	// userCacheSecretFlag sets the secret explicitly on the command line. An
-	// explicit empty value disables injection and generation entirely
-	// (tenant-wide caching).
+	// empty value is treated as unset and falls through to the environment or
+	// generated persisted secret.
 	userCacheSecretFlag = "user-cache-secret"
 
-	// userCacheSecretField is the router-only request-body field. A non-empty
-	// string scopes the prompt cache to that secret; an absent or empty value
-	// leaves the request in the tenant-wide namespace.
+	// userCacheSecretField is the router-only request-body field. An absent or
+	// empty string is replaced with the resolved proxy secret. Non-empty
+	// strings and non-string values remain caller-owned.
 	userCacheSecretField = "user_cache_secret"
 
-	// userCacheSecretEnv provisions the secret via the environment. Setting it
-	// to an empty string disables generation entirely (tenant-wide caching),
-	// which is the right call for pooled multi-user deployments that would
-	// otherwise mint a fresh namespace per container.
+	// userCacheSecretEnv provisions the secret via the environment. An empty
+	// value is treated as unset and falls through to the generated persisted
+	// secret.
 	userCacheSecretEnv = "TINFOIL_USER_CACHE_SECRET"
 
 	// userCacheSecretFile is the persisted-secret path under the home
@@ -82,13 +84,14 @@ var userCacheSecretPaths = []string{
 }
 
 // resolveUserCacheSecret resolves the proxy-level secret: the explicit flag
-// wins, then the environment, then the persisted (or generated) secret. An
-// empty result means injection is disabled.
+// wins when non-empty, then the non-empty environment, then the persisted (or
+// generated) secret. Empty flag and environment values are treated as unset.
+// An empty result is only possible if secure random generation fails.
 func resolveUserCacheSecret(explicit string, explicitSet bool) string {
-	if explicitSet {
+	if explicitSet && explicit != "" {
 		return explicit
 	}
-	if env, ok := os.LookupEnv(userCacheSecretEnv); ok {
+	if env, ok := os.LookupEnv(userCacheSecretEnv); ok && env != "" {
 		return env
 	}
 	return loadOrGenerateUserCacheSecret()
@@ -177,9 +180,9 @@ func loadOrGenerateUserCacheSecret() string {
 // request bodies on the way out. It sits above the reloading upstream and the
 // SDK's sealing transport (pinned TLS or EHBP), so the field is added before
 // the body is sealed and router-reselection retries replay the injected body.
-// A field the local client already sent is never overwritten — an explicit
-// per-request value, including an explicit empty string (= opt out for that
-// request), always wins.
+// A non-empty string or non-string value the local client already sent is
+// never overwritten. An explicit empty string is treated as unset and
+// replaced with the proxy-level secret.
 type userCacheSecretTransport struct {
 	secret    string
 	transport http.RoundTripper
@@ -213,8 +216,8 @@ func (t *userCacheSecretTransport) RoundTrip(req *http.Request) (*http.Response,
 	newBody, changed := injectUserCacheSecret(raw, t.secret)
 	out := req.Clone(req.Context())
 	if !changed {
-		// Not a JSON object, or the client set the field: forward the
-		// original bytes untouched.
+		// Not a JSON object, or the client supplied a caller-owned value:
+		// forward the original bytes untouched.
 		out.Body = io.NopCloser(bytes.NewReader(raw))
 		return t.transport.RoundTrip(out)
 	}
@@ -251,11 +254,11 @@ func userCacheSecretPathEligible(req *http.Request) bool {
 	return false
 }
 
-// injectUserCacheSecret adds the field to a JSON-object body, preserving
-// number precision across the re-marshal (float64 round-tripping would corrupt
-// int64-range values such as seed). It reports false — forward the original
-// bytes — for non-object bodies, trailing data, or a body that already carries
-// the field.
+// injectUserCacheSecret adds an absent field or replaces an empty string in a
+// JSON-object body. Non-empty strings and non-string values remain
+// caller-owned. RawMessage preserves number precision across the re-marshal.
+// It reports false — forward the original bytes — for non-object bodies,
+// trailing data, caller-owned values, or duplicate target fields.
 func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
 	if !utf8.Valid(raw) {
 		// encoding/json tolerates invalid UTF-8 inside strings but coerces
@@ -265,15 +268,46 @@ func injectUserCacheSecret(raw []byte, secret string) ([]byte, bool) {
 		return nil, false
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var body map[string]any
-	if err := dec.Decode(&body); err != nil || !decodeConsumedAll(dec) || body == nil {
+	first, err := dec.Token()
+	if err != nil || first != json.Delim('{') {
 		return nil, false
 	}
-	if _, ok := body[userCacheSecretField]; ok {
+
+	body := make(map[string]json.RawMessage)
+	targetCount := 0
+	targetIsEmptyString := false
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		name, ok := key.(string)
+		if !ok {
+			return nil, false
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, false
+		}
+		body[name] = value
+		if name == userCacheSecretField {
+			targetCount++
+			var stringValue *string
+			targetIsEmptyString = json.Unmarshal(value, &stringValue) == nil && stringValue != nil && *stringValue == ""
+		}
+	}
+	if last, err := dec.Token(); err != nil || last != json.Delim('}') || !decodeConsumedAll(dec) {
 		return nil, false
 	}
-	body[userCacheSecretField] = secret
+
+	if targetCount > 1 || targetCount == 1 && !targetIsEmptyString {
+		return nil, false
+	}
+	encodedSecret, err := json.Marshal(secret)
+	if err != nil {
+		return nil, false
+	}
+	body[userCacheSecretField] = encodedSecret
 	newBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, false

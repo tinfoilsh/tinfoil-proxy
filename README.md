@@ -93,31 +93,31 @@ Once it's running, the endpoint is just a regular OpenAI-compatible base URL —
 
 ## Prompt Cache Scoping
 
-The inference router partitions its prompt cache per API identity, so your cached prompts are never observable by other tenants. Within your tenant, the proxy scopes caching further with a `user_cache_secret`: requests carrying the same secret share cached prompt prefixes, requests carrying different secrets cannot observe each other's cache timing. The secret never reaches the model — the router consumes it to derive the cache namespace and strips it from the request.
+The inference router derives each prompt-cache namespace from both the authenticated API identity and `user_cache_secret`. Requests under the same API identity and secret can share cached prompt prefixes and therefore cache-hit timing; changing either component separates that timing-sharing boundary. The router consumes the field and strips it before model execution.
 
-By default the proxy generates a random secret and persists it at `~/.tinfoil/user_cache_secret` (mode `0600`, shared with the Tinfoil SDKs on the same machine), so caching just works with per-machine scoping. You can control it explicitly:
+Treat a cache secret as sensitive cache-partition data. It is not authentication, authorization, or encryption, and knowing one does not grant API access, but reusing or disclosing one can place authenticated requests in the same timing-sharing namespace.
+
+By default the proxy generates a random secret and persists it at `~/.tinfoil/user_cache_secret` (mode `0600`, shared with the Tinfoil SDKs on the same machine), providing a stable per-machine namespace. Resolution uses the first non-empty value in this order: `--user-cache-secret`, `TINFOIL_USER_CACHE_SECRET`, then the persisted or newly generated secret. Empty flag and environment values are treated as unset and fall through:
 
 ```sh
 # Pin the secret for every request this proxy forwards
 tinfoil-proxy --user-cache-secret "$SECRET"
 
 # Or provision it via the environment
-#   TINFOIL_USER_CACHE_SECRET=<secret>   use this value
-#   TINFOIL_USER_CACHE_SECRET=           (set but empty) disable: tenant-wide caching
-
-# Opt out entirely (tenant-wide caching, no file written)
-tinfoil-proxy --user-cache-secret ""
+TINFOIL_USER_CACHE_SECRET="$SECRET" tinfoil-proxy
 ```
 
-Clients that hold many end users' conversations should scope per request instead; a `user_cache_secret` field already present in a forwarded body always wins over the proxy-level secret (an explicit empty string opts that request out):
+On eligible request bodies, the proxy adds its resolved secret when `user_cache_secret` is absent and replaces an empty string with that secret. Non-empty strings and non-string values remain caller-owned and pass through unchanged.
+
+Multi-user services must supply a stable, non-empty, opaque per-user or per-group `user_cache_secret` on every eligible request. Do not rely on the proxy-level default for user separation:
 
 ```json
 {"model": "gpt-oss-120b", "messages": [], "user_cache_secret": "<per-user secret>"}
 ```
 
-Forwarded bodies that are not a single well-formed JSON object — or that exceed 8 MiB — are passed through byte-identical without injection, so those requests fall back to tenant-wide caching.
+Injection applies only to POST bodies for chat completions, completions, and responses endpoints. Direct requests that bypass this proxy, ineligible endpoints, bodies over 8 MiB, and bodies that are not a single well-formed JSON object are not normalized by the proxy. Callers must set the field themselves where supported, and must not assume these paths receive the proxy's partitioning.
 
-If the secret cannot be persisted (no home directory, read-only filesystem), the proxy falls back to an in-memory secret and warns once: cache continuity then resets on every restart. Containerized deployments should set `TINFOIL_USER_CACHE_SECRET` explicitly — one value per end user if requests are per-user, or empty to keep tenant-wide caching across replicas.
+If the generated secret cannot be persisted (for example, no home directory or a read-only filesystem), the proxy warns and uses a process-lifetime in-memory secret. Requests remain partitioned for that runtime, but cache continuity resets on restart. Containerized deployments that need continuity across replicas should provide a stable non-empty value, while multi-user services should still override it per eligible request.
 
 ## Menu-bar app
 
