@@ -93,7 +93,7 @@ Once it's running, the endpoint is just a regular OpenAI-compatible base URL —
 
 ## Prompt Cache Scoping
 
-The inference router derives each prompt-cache namespace from both the authenticated API identity and `user_cache_secret`. Requests under the same API identity and secret can share cached prompt prefixes and therefore cache-hit timing; changing either component separates that timing-sharing boundary. The router consumes the field and strips it before model execution.
+The inference router derives each prompt-cache namespace from both the authenticated API identity and `user_cache_secret`. Requests under the same API identity and secret can share cached prompt prefixes and therefore cache-hit timing; changing either component separates that timing-sharing boundary.
 
 Treat a cache secret as sensitive cache-partition data. It is not authentication, authorization, or encryption, and knowing one does not grant API access, but reusing or disclosing one can place authenticated requests in the same timing-sharing namespace.
 
