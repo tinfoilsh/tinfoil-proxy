@@ -128,7 +128,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		tokens = newTokenCounter(emitTokenStats)
 	}
 
-	cacheSecret := resolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
+	cacheSecret := resolveProxyUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
 	proxy := newReverseProxy(reloading, cacheSecret, tokens)
 
 	addr := bindAddress()
@@ -209,14 +209,14 @@ func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
 	if requestedEnclave != "" || requestedRepo != "" {
 		opts = append(opts, tinfoil.WithEnclave(requestedEnclave), tinfoil.WithRepo(requestedRepo))
 	}
-	tinfoilClient, err := tinfoil.NewClientWithOptions(opts...)
+	verified, err := tinfoil.NewVerifiedTransport(opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &upstream{
-		host:      tinfoilClient.Enclave(),
-		repo:      tinfoilClient.Repo(),
-		transport: tinfoilClient.HTTPClient().Transport,
+		host:      verified.Enclave(),
+		repo:      verified.Repo(),
+		transport: verified,
 	}, nil
 }
 
@@ -533,6 +533,17 @@ func setRequestBody(req *http.Request, body []byte) {
 	req.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(body)), nil
 	}
+}
+
+// decodeConsumedAll reports whether dec has nothing left but trailing
+// whitespace: a follow-up Token read returns io.EOF only at true end of
+// input. dec.More() is not enough here — it reports "no more elements" at a
+// trailing '}' or ']', so a malformed body like `{...}}` would be
+// re-marshaled without its trailing bytes and a request the router rejects
+// would quietly become one it accepts.
+func decodeConsumedAll(dec *json.Decoder) bool {
+	_, err := dec.Token()
+	return err == io.EOF
 }
 
 type tokenCounter struct {
