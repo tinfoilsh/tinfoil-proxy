@@ -213,17 +213,10 @@ func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The origin guard refuses any request that is not addressed to the
-	// verified enclave, so a bug above this layer cannot leak forwarded
-	// credentials or bodies to another host.
-	guarded, err := tinfoil.NewHostBoundTransport(verified.Enclave(), "", verified)
-	if err != nil {
-		return nil, err
-	}
 	return &upstream{
 		host:      verified.Enclave(),
 		repo:      verified.Repo(),
-		transport: guarded,
+		transport: verified,
 	}, nil
 }
 
