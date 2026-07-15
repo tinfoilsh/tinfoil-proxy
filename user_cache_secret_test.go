@@ -24,7 +24,7 @@ func unsetUserCacheSecretEnv(t *testing.T) {
 	}
 }
 
-func TestUserCacheSecretFlagExplicitEmptyCountsAsSet(t *testing.T) {
+func TestUserCacheSecretFlagExplicitEmptyFallsThrough(t *testing.T) {
 	flag := rootCmd.Flags().Lookup(userCacheSecretFlag)
 	if flag == nil {
 		t.Fatalf("expected --%s to be registered", userCacheSecretFlag)
@@ -42,13 +42,13 @@ func TestUserCacheSecretFlagExplicitEmptyCountsAsSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !flag.Changed {
-		t.Fatalf("an explicit empty --%s must still count as set (it disables provisioning)", userCacheSecretFlag)
+		t.Fatalf("an explicit empty --%s must still be recorded as set", userCacheSecretFlag)
 	}
 
-	// The explicit empty flag disables provisioning despite the environment.
+	// Empty values normalize to unset even though Cobra records the flag.
 	t.Setenv(userCacheSecretEnv, "from-env")
-	if got := resolveUserCacheSecret(userCacheSecret, flag.Changed); got != "" {
-		t.Fatalf("expected an explicit empty flag to disable provisioning, got %q", got)
+	if got := resolveUserCacheSecret(userCacheSecret, flag.Changed); got != "from-env" {
+		t.Fatalf("expected an explicit empty flag to fall through, got %q", got)
 	}
 }
 
@@ -63,10 +63,10 @@ func TestResolveUserCacheSecretPrecedence(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit empty disables even with environment set", func(t *testing.T) {
+	t.Run("explicit empty falls through to environment", func(t *testing.T) {
 		t.Setenv(userCacheSecretEnv, "from-env")
-		if got := resolveUserCacheSecret("", true); got != "" {
-			t.Fatalf("expected an empty secret, got %q", got)
+		if got := resolveUserCacheSecret("", true); got != "from-env" {
+			t.Fatalf("expected the environment secret, got %q", got)
 		}
 	})
 
@@ -80,13 +80,13 @@ func TestResolveUserCacheSecretPrecedence(t *testing.T) {
 		}
 	})
 
-	t.Run("environment set but empty disables generation", func(t *testing.T) {
+	t.Run("environment set but empty falls through to generation", func(t *testing.T) {
 		t.Setenv(userCacheSecretEnv, "")
-		if got := resolveUserCacheSecret("", false); got != "" {
-			t.Fatalf("expected an empty secret, got %q", got)
+		if got := resolveUserCacheSecret("", false); len(got) != 64 {
+			t.Fatalf("expected a generated secret, got %q", got)
 		}
-		if _, err := os.Stat(filepath.Join(home, userCacheSecretDirName)); !os.IsNotExist(err) {
-			t.Fatalf("a disabled secret must not create the secret file, stat err = %v", err)
+		if _, err := os.Stat(filepath.Join(home, userCacheSecretDirName, userCacheSecretFileName)); err != nil {
+			t.Fatalf("an empty environment value must fall through to persistence: %v", err)
 		}
 	})
 }
@@ -329,7 +329,12 @@ func TestUserCacheSecretTransportNeverClobbers(t *testing.T) {
 		raw  string
 	}{
 		{"explicit per-request secret", `{"model":"m","user_cache_secret":"end-user-7"}`},
-		{"explicit empty opt-out", `{"model":"m","user_cache_secret":""}`},
+		{"whitespace per-request secret", `{"model":"m","user_cache_secret":" "}`},
+		{"null per-request value", `{"model":"m","user_cache_secret":null}`},
+		{"numeric per-request value", `{"model":"m","user_cache_secret":7}`},
+		{"boolean per-request value", `{"model":"m","user_cache_secret":false}`},
+		{"object per-request value", `{"model":"m","user_cache_secret":{"scope":"caller"}}`},
+		{"array per-request value", `{"model":"m","user_cache_secret":[]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -340,6 +345,45 @@ func TestUserCacheSecretTransportNeverClobbers(t *testing.T) {
 			}
 			if string(capture.body) != tc.raw {
 				t.Fatalf("a body that already carries the field must pass through byte-identical, got %q", capture.body)
+			}
+		})
+	}
+}
+
+func TestUserCacheSecretTransportReplacesEmptyString(t *testing.T) {
+	capture := &captureRoundTripper{}
+	transport := &userCacheSecretTransport{secret: "proxy-level", transport: capture}
+	const raw = `{"model":"m","user_cache_secret":""}`
+	if _, err := transport.RoundTrip(postJSONRequest(t, "https://enclave.example.com/v1/chat/completions", raw)); err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(capture.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body[userCacheSecretField] != "proxy-level" {
+		t.Fatalf("expected the empty string to be replaced, got %v", body[userCacheSecretField])
+	}
+}
+
+func TestUserCacheSecretTransportPreservesDuplicateFields(t *testing.T) {
+	for _, raw := range []string{
+		`{"user_cache_secret":"","user_cache_secret":"caller"}`,
+		`{"user_cache_secret":"caller","user_cache_secret":""}`,
+		`{"user_cache_secret":"","user_cache_secret":""}`,
+		`{"user_cache_secret":null,"user_cache_secret":""}`,
+		`{"model":"a","model":"b"}`,
+		`{"model":"a","model":"b","user_cache_secret":""}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			capture := &captureRoundTripper{}
+			transport := &userCacheSecretTransport{secret: "proxy-level", transport: capture}
+			if _, err := transport.RoundTrip(postJSONRequest(t, "https://enclave.example.com/v1/chat/completions", raw)); err != nil {
+				t.Fatal(err)
+			}
+			if string(capture.body) != raw {
+				t.Fatalf("an ambiguous duplicate field must pass through byte-identical, got %q", capture.body)
 			}
 		})
 	}
@@ -490,8 +534,8 @@ func TestNewReverseProxyStackOrder(t *testing.T) {
 		t.Fatalf("expected the injector to wrap the reloading upstream, got %T", ucs.transport)
 	}
 
-	// An empty secret (explicit opt-out, or set-but-empty environment) must
-	// not add an injection layer at all.
+	// An empty resolved secret is only possible when secure random generation
+	// fails, and must not add an injection layer.
 	proxy = newReverseProxy(reloading, "", nil)
 	lt, ok = proxy.Transport.(*loggingTransport)
 	if !ok {
@@ -505,8 +549,8 @@ func TestNewReverseProxyStackOrder(t *testing.T) {
 // TestUserCacheSecretThroughProxy drives real HTTP requests through the
 // proxy's forwarding pipeline (reverse proxy, logging transport, injector,
 // reloading upstream), pinning that the proxy-level secret rides forwarded
-// bodies exactly as local clients send them — and that a field the client
-// already set wins over the proxy-level secret.
+// bodies exactly as local clients send them, normalizing empty strings while
+// preserving caller-owned values.
 func TestUserCacheSecretThroughProxy(t *testing.T) {
 	record := &stubUpstreamTransport{}
 	reloading := newReloadingUpstream(
@@ -552,5 +596,16 @@ func TestUserCacheSecretThroughProxy(t *testing.T) {
 	}
 	if record.bodies[1] != clientBody {
 		t.Fatalf("a client-supplied field must pass through byte-identical, got %q", record.bodies[1])
+	}
+
+	post(`{"model":"m","user_cache_secret":""}`)
+	if len(record.bodies) != 3 {
+		t.Fatalf("expected three upstream requests, got %d", len(record.bodies))
+	}
+	if err := json.Unmarshal([]byte(record.bodies[2]), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body[userCacheSecretField] != "proxy-level" {
+		t.Fatalf("expected an empty client field to be replaced, got %v", body[userCacheSecretField])
 	}
 }
