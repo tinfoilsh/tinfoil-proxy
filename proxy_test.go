@@ -109,12 +109,74 @@ func TestLocalOnlyGuardRejectsUnexpectedHostOnLoopbackBind(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyGuardRejectsOriginByDefault(t *testing.T) {
+	withAllowedOrigins(t, nil)
+	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
+	req.Header.Set("Origin", "tauri://localhost")
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d", http.StatusForbidden, rec.Code)
+	}
+}
+
+func TestLocalOnlyGuardAllowsConfiguredOrigin(t *testing.T) {
+	withAllowedOrigins(t, []string{"tauri://localhost"})
+	nextCalled := false
+	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
+	req.Header.Set("Origin", "tauri://localhost")
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d", http.StatusNoContent, rec.Code)
+	}
+	if !nextCalled {
+		t.Fatal("expected next handler to be called")
+	}
+}
+
+func TestLocalOnlyGuardRejectsUnconfiguredOrigin(t *testing.T) {
+	withAllowedOrigins(t, []string{"tauri://localhost"})
+	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
+	req.Header.Set("Origin", "https://evil.test")
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected %d, got %d", http.StatusForbidden, rec.Code)
+	}
+}
+
 func withAllowedHostnames(t *testing.T, hosts []string) {
 	t.Helper()
 	previous := allowedHostnames
 	allowedHostnames = hosts
 	t.Cleanup(func() {
 		allowedHostnames = previous
+	})
+}
+
+func withAllowedOrigins(t *testing.T, origins []string) {
+	t.Helper()
+	previous := allowedOrigins
+	allowedOrigins = origins
+	t.Cleanup(func() {
+		allowedOrigins = previous
 	})
 }
 
