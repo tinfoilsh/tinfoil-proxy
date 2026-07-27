@@ -31,8 +31,9 @@ var (
 	trace            bool
 	handshake        bool
 	allowedHostnames []string
-	allowedOrigins   []string
 )
+
+var deprecatedAllowedOrigins []string
 
 var rootCmd = &cobra.Command{
 	Use:   "tinfoil-proxy",
@@ -47,7 +48,8 @@ func init() {
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
 	rootCmd.Flags().StringSliceVar(&allowedHostnames, "allowed-host", nil, "Additional Host header hostname to allow")
-	rootCmd.Flags().StringSliceVar(&allowedOrigins, "allowed-origin", nil, "Origin header value to allow")
+	rootCmd.Flags().StringSliceVar(&deprecatedAllowedOrigins, "allowed-origin", nil, "Deprecated; all Origin header values are allowed")
+	_ = rootCmd.Flags().MarkDeprecated("allowed-origin", "all Origin header values are allowed by default")
 	rootCmd.Flags().StringVar(&userCacheSecret, userCacheSecretFlag, "", "Prompt-cache scoping secret added to forwarded requests (empty is unset; default: generated and persisted)")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.Flags().BoolVarP(&trace, "trace", "t", false, "Trace output")
