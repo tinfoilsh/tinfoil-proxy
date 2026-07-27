@@ -109,56 +109,37 @@ func TestLocalOnlyGuardRejectsUnexpectedHostOnLoopbackBind(t *testing.T) {
 	}
 }
 
-func TestLocalOnlyGuardRejectsOriginByDefault(t *testing.T) {
-	withAllowedOrigins(t, nil)
-	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	}))
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
-	req.Header.Set("Origin", "tauri://localhost")
-	rec := httptest.NewRecorder()
+func TestLocalOnlyGuardAllowsArbitraryOrigin(t *testing.T) {
+	for _, origin := range []string{"tauri://localhost", "https://evil.test"} {
+		t.Run(origin, func(t *testing.T) {
+			nextCalled := false
+			guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
+			req.Header.Set("Origin", origin)
+			rec := httptest.NewRecorder()
 
-	guard.ServeHTTP(rec, req)
+			guard.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected %d, got %d", http.StatusForbidden, rec.Code)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("expected %d, got %d", http.StatusNoContent, rec.Code)
+			}
+			if !nextCalled {
+				t.Fatal("expected next handler to be called")
+			}
+		})
 	}
 }
 
-func TestLocalOnlyGuardAllowsConfiguredOrigin(t *testing.T) {
-	withAllowedOrigins(t, []string{"tauri://localhost"})
-	nextCalled := false
-	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
-	req.Header.Set("Origin", "tauri://localhost")
-	rec := httptest.NewRecorder()
-
-	guard.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected %d, got %d", http.StatusNoContent, rec.Code)
+func TestAllowedOriginFlagRemainsAcceptedForCompatibility(t *testing.T) {
+	flag := rootCmd.Flags().Lookup("allowed-origin")
+	if flag == nil {
+		t.Fatal("expected allowed-origin flag to remain registered")
 	}
-	if !nextCalled {
-		t.Fatal("expected next handler to be called")
-	}
-}
-
-func TestLocalOnlyGuardRejectsUnconfiguredOrigin(t *testing.T) {
-	withAllowedOrigins(t, []string{"tauri://localhost"})
-	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
-	}))
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3301/v1", nil)
-	req.Header.Set("Origin", "https://evil.test")
-	rec := httptest.NewRecorder()
-
-	guard.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected %d, got %d", http.StatusForbidden, rec.Code)
+	if flag.Deprecated == "" {
+		t.Fatal("expected allowed-origin flag to be deprecated")
 	}
 }
 
@@ -168,15 +149,6 @@ func withAllowedHostnames(t *testing.T, hosts []string) {
 	allowedHostnames = hosts
 	t.Cleanup(func() {
 		allowedHostnames = previous
-	})
-}
-
-func withAllowedOrigins(t *testing.T, origins []string) {
-	t.Helper()
-	previous := allowedOrigins
-	allowedOrigins = origins
-	t.Cleanup(func() {
-		allowedOrigins = previous
 	})
 }
 
