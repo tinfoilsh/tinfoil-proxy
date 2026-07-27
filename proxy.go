@@ -368,15 +368,21 @@ func isUnspecifiedBind(host string) bool {
 }
 
 func localOnlyGuard(addr string, next http.Handler) http.Handler {
-	allowed := allowedHosts(addr)
+	hosts := allowedHosts(addr)
+	origins := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		origins[origin] = struct{}{}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := allowed[r.Host]; !ok {
+		if _, ok := hosts[r.Host]; !ok {
 			http.Error(w, "invalid Host header", http.StatusBadRequest)
 			return
 		}
-		if r.Header.Get("Origin") != "" {
-			http.Error(w, "cross-origin requests are not allowed", http.StatusForbidden)
-			return
+		if origin := r.Header.Get("Origin"); origin != "" {
+			if _, ok := origins[origin]; !ok {
+				http.Error(w, "cross-origin requests are not allowed", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
