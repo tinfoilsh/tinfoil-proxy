@@ -482,6 +482,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
 }
 
 .allowed-host-item {

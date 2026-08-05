@@ -53,21 +53,26 @@ function formatVerificationTime(value: string): string {
 
 const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i
 const MAX_HOSTNAME_LENGTH = 253
+const MAX_ALLOWED_HOSTS = 32
 
 // Mirrors the main-process validation in config.ts so invalid entries are
 // caught before the IPC round trip.
 function normalizeAllowedHost(value: string): string | null {
   const trimmed = value.trim().toLowerCase()
-  if (trimmed.length === 0 || trimmed.length > MAX_HOSTNAME_LENGTH) return null
+  if (trimmed.length === 0) return null
   const colonIndex = trimmed.lastIndexOf(':')
   let host = trimmed
+  let port: number | null = null
   if (colonIndex !== -1) {
-    const port = Number(trimmed.slice(colonIndex + 1))
+    const portText = trimmed.slice(colonIndex + 1)
+    if (!/^[0-9]+$/.test(portText)) return null
+    port = Number(portText)
     if (!Number.isInteger(port) || port < 1 || port > 65535) return null
     host = trimmed.slice(0, colonIndex)
   }
+  if (host.length > MAX_HOSTNAME_LENGTH) return null
   if (!HOSTNAME_PATTERN.test(host)) return null
-  return trimmed
+  return port === null ? host : `${host}:${port}`
 }
 
 type LockState = 'verified' | 'failed' | 'off' | 'initializing'
@@ -164,34 +169,56 @@ export default function App() {
 
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [hostInput, setHostInput] = useState('')
-  const [hostError, setHostError] = useState(false)
+  const [hostError, setHostError] = useState<string | null>(null)
+  const [hostsBusy, setHostsBusy] = useState(false)
 
   const onAddAllowedHost = useCallback(async () => {
-    if (!state) return
+    if (!state || hostsBusy) return
     const normalized = normalizeAllowedHost(hostInput)
     if (normalized === null) {
-      setHostError(hostInput.trim().length > 0)
+      if (hostInput.trim().length > 0) {
+        setHostError('Enter a valid hostname, optionally with a port.')
+      }
       return
     }
-    setHostError(false)
-    setHostInput('')
-    if (state.proxy.allowedHosts.includes(normalized)) return
-    const updated = await window.tinfoil.setAllowedHosts([
-      ...state.proxy.allowedHosts,
-      normalized
-    ])
-    setState(updated)
-  }, [hostInput, state])
+    if (state.proxy.allowedHosts.length >= MAX_ALLOWED_HOSTS) {
+      setHostError(`At most ${MAX_ALLOWED_HOSTS} allowed hosts are supported.`)
+      return
+    }
+    setHostError(null)
+    if (state.proxy.allowedHosts.includes(normalized)) {
+      setHostInput('')
+      return
+    }
+    setHostsBusy(true)
+    try {
+      const updated = await window.tinfoil.setAllowedHosts([
+        ...state.proxy.allowedHosts,
+        normalized
+      ])
+      setState(updated)
+      setHostInput('')
+    } catch {
+      setHostError('Could not save the allowed host. Try again.')
+    } finally {
+      setHostsBusy(false)
+    }
+  }, [hostInput, hostsBusy, state])
 
   const onRemoveAllowedHost = useCallback(
     async (host: string) => {
-      if (!state) return
-      const updated = await window.tinfoil.setAllowedHosts(
-        state.proxy.allowedHosts.filter((h) => h !== host)
-      )
-      setState(updated)
+      if (!state || hostsBusy) return
+      setHostsBusy(true)
+      try {
+        const updated = await window.tinfoil.setAllowedHosts(
+          state.proxy.allowedHosts.filter((h) => h !== host)
+        )
+        setState(updated)
+      } finally {
+        setHostsBusy(false)
+      }
     },
-    [state]
+    [hostsBusy, state]
   )
 
   const [copied, setCopied] = useState(false)
@@ -437,6 +464,7 @@ export default function App() {
                         onClick={() => {
                           void onRemoveAllowedHost(host)
                         }}
+                        disabled={hostsBusy}
                         title={`Remove ${host}`}
                         aria-label={`Remove ${host}`}
                       >
@@ -454,7 +482,7 @@ export default function App() {
                   value={hostInput}
                   onChange={(e) => {
                     setHostInput(e.target.value)
-                    setHostError(false)
+                    setHostError(null)
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
@@ -471,14 +499,12 @@ export default function App() {
                   onClick={() => {
                     void onAddAllowedHost()
                   }}
-                  disabled={hostInput.trim().length === 0}
+                  disabled={hostsBusy || hostInput.trim().length === 0}
                 >
                   Add
                 </button>
               </div>
-              {hostError && (
-                <div className="allowed-host-error">Enter a valid hostname, optionally with a port.</div>
-              )}
+              {hostError && <div className="allowed-host-error">{hostError}</div>}
             </div>
           )}
         </div>

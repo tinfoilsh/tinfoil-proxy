@@ -36,22 +36,25 @@ function isValidPort(value: unknown): value is number {
 export function normalizeAllowedHost(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim().toLowerCase()
-  if (trimmed.length === 0 || trimmed.length > MAX_HOSTNAME_LENGTH) return null
+  if (trimmed.length === 0) return null
   const colonIndex = trimmed.lastIndexOf(':')
   let host = trimmed
+  let port: number | null = null
   if (colonIndex !== -1) {
-    const port = Number(trimmed.slice(colonIndex + 1))
-    if (!isValidPort(port)) return null
+    const portText = trimmed.slice(colonIndex + 1)
+    if (!/^[0-9]+$/.test(portText) || !isValidPort(Number(portText))) return null
+    port = Number(portText)
     host = trimmed.slice(0, colonIndex)
   }
+  if (host.length > MAX_HOSTNAME_LENGTH) return null
   if (!HOSTNAME_PATTERN.test(host)) return null
-  return trimmed
+  return port === null ? host : `${host}:${port}`
 }
 
 export function sanitizeAllowedHosts(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   const hosts: string[] = []
-  for (const entry of value) {
+  for (const entry of value.slice(0, MAX_ALLOWED_HOSTS)) {
     const normalized = normalizeAllowedHost(entry)
     if (normalized === null || hosts.includes(normalized)) continue
     hosts.push(normalized)
