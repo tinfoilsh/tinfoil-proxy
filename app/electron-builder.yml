@@ -31,7 +31,7 @@ mac:
       arch:
         - universal
   artifactName: Tinfoil-Proxy-${arch}.${ext}
-  icon: assets/icon.icns
+  icon: assets/icon.icon
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
