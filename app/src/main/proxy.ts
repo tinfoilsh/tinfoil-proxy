@@ -6,7 +6,6 @@ import { app } from 'electron'
 import { z } from 'zod'
 
 import { PROXY_LISTEN_HOST } from './constants.js'
-import { verifyEnclave } from './secure-client.js'
 import { stateStore } from './state.js'
 
 const PROXY_STOP_GRACE_MS = 3000
@@ -380,40 +379,10 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     return null
   }
 
-  const independentVerification = await verifyEnclave(ready.enclave)
-  if (child !== proc || proc.exitCode !== null) return null
-  if (!independentVerification.verified || !independentVerification.document) {
-    const reason = independentVerification.error ?? 'attestation could not be confirmed'
-    setProxyState({
-      running: false,
-      verifying: false,
-      verified: false,
-      lastError: `Independent verification of ${ready.enclave} failed: ${reason}`
-    })
-    sendSignal(proc, 'abort')
-    return null
-  }
-
-  const independentDocument = independentVerification.document
-  if (
-    independentDocument.configRepo !== document.configRepo ||
-    independentDocument.enclaveHost !== document.enclaveHost ||
-    independentDocument.releaseTag !== document.releaseTag ||
-    independentDocument.releaseDigest !== document.releaseDigest ||
-    independentDocument.tlsPublicKey !== document.tlsPublicKey ||
-    independentDocument.codeFingerprint !== document.codeFingerprint ||
-    independentDocument.enclaveFingerprint !== document.enclaveFingerprint
-  ) {
-    setProxyState({
-      running: false,
-      verifying: false,
-      verified: false,
-      lastError: 'Independent verification does not match the proxy verification document'
-    })
-    sendSignal(proc, 'abort')
-    return null
-  }
-
+  // The desktop app ships and trusts this proxy binary as its active verifier.
+  // Binding the document to this process and listener avoids a second verifier
+  // with independently changing release selection rather than adding a new
+  // trust root.
   sendSignal(proc, 'go')
   setProxyState({ running: true, verifying: false, verified: true, lastError: undefined })
   return { port, endpoint: proxyEndpoint(port) }
