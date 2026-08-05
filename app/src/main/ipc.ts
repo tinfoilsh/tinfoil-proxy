@@ -66,8 +66,13 @@ export function registerIpc(): void {
     if (!isFromPopup(event)) return false
     const proxy = stateStore.get().proxy
     if (!proxy.running || !proxy.verified || proxy.port <= 0) return false
-    await shell.openExternal(verificationDocumentEndpoint(proxy.port))
-    return true
+    try {
+      await shell.openExternal(verificationDocumentEndpoint(proxy.port))
+      return true
+    } catch (err) {
+      console.error('[tray] failed to open verification document:', err)
+      return false
+    }
   })
 
   ipcMain.handle('tray:setProxyEnabled', async (event, enabled: boolean) => {
