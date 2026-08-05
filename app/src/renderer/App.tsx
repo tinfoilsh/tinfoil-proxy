@@ -197,7 +197,9 @@ export default function App() {
         normalized
       ])
       setState(updated)
-      setHostInput('')
+      // The save can take a while (it restarts the proxy), so only clear the
+      // field if the user hasn't started typing the next entry meanwhile.
+      setHostInput((current) => (current === hostInput ? '' : current))
     } catch {
       setHostError('Could not save the allowed host. Try again.')
     } finally {
@@ -214,6 +216,8 @@ export default function App() {
           state.proxy.allowedHosts.filter((h) => h !== host)
         )
         setState(updated)
+      } catch {
+        setHostError(`Could not remove ${host}. Try again.`)
       } finally {
         setHostsBusy(false)
       }
