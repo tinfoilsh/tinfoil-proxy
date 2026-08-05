@@ -47,7 +47,7 @@ func init() {
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
-	rootCmd.Flags().StringSliceVar(&allowedHostnames, "allowed-host", nil, "Additional Host header hostname to allow")
+	rootCmd.Flags().StringSliceVar(&allowedHostnames, "allowed-host", nil, "Additional Host header hostname to allow (values without a port also match portless Host headers)")
 	rootCmd.Flags().StringSliceVar(&deprecatedAllowedOrigins, "allowed-origin", nil, "Deprecated; all Origin header values are allowed")
 	_ = rootCmd.Flags().MarkDeprecated("allowed-origin", "all Origin header values are allowed by default")
 	rootCmd.Flags().StringVar(&userCacheSecret, userCacheSecretFlag, "", "Prompt-cache scoping secret added to forwarded requests (empty is unset; default: generated and persisted)")

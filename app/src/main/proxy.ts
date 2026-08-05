@@ -230,7 +230,10 @@ async function waitForExit(proc: CliProcess): Promise<void> {
   })
 }
 
-export async function startProxy(port: number): Promise<{ port: number; endpoint: string } | null> {
+export async function startProxy(
+  port: number,
+  allowedHosts: string[] = []
+): Promise<{ port: number; endpoint: string } | null> {
   if (child) {
     await stopProxy()
   }
@@ -244,6 +247,7 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
       verifying: false,
       verified: false,
       port,
+      allowedHosts,
       upstreamedTokens: 0,
       downstreamedTokens: 0,
       enclave: undefined,
@@ -254,6 +258,9 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
 
   intentionalShutdown = false
   const args = ['-p', String(port), '-b', PROXY_LISTEN_HOST, '--handshake']
+  for (const host of allowedHosts) {
+    args.push('--allowed-host', host)
+  }
   const proc = spawn(binary, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env }
@@ -268,6 +275,7 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     verifying: true,
     verified: false,
     port,
+    allowedHosts,
     upstreamedTokens: 0,
     downstreamedTokens: 0,
     enclave: undefined,
