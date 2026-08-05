@@ -423,8 +423,10 @@ body {
 }
 
 .advanced-toggle {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
   align-items: center;
+  justify-content: space-between;
   gap: 5px;
   padding: 2px 0;
   border: none;

@@ -410,19 +410,20 @@ export default function App() {
             onClick={() => setAdvancedOpen((open) => !open)}
             aria-expanded={advancedOpen}
           >
+            <span>Advanced settings</span>
             <PiCaretRight
               size={12}
               className={`advanced-caret ${advancedOpen ? 'advanced-caret-open' : ''}`}
               aria-hidden="true"
             />
-            <span>Advanced settings</span>
           </button>
           {advancedOpen && (
             <div className="advanced-body">
               <div className="allowed-hosts-header">
                 <span className="allowed-hosts-label">Allowed hosts</span>
                 <span className="allowed-hosts-hint">
-                  Extra Host headers accepted by the proxy, for use behind a reverse proxy.
+                  If you reach this proxy through another address, such as a reverse proxy in
+                  front of it, add that hostname here so its requests are accepted.
                 </span>
               </div>
               {state.proxy.allowedHosts.length > 0 && (
