@@ -91,6 +91,21 @@ tinfoil-proxy -e inference.tinfoil.sh -r tinfoilsh/confidential-model-router -p 
 
 Once it's running, the endpoint is just a regular OpenAI-compatible base URL — see the [coding agents guide](https://docs.tinfoil.sh/tutorials/coding-agents) for plug-and-play setups, or the [CLI docs](https://docs.tinfoil.sh/local-proxy/cli) for the full reference.
 
+### Verification document
+
+The proxy exposes the verification result used by its active upstream transport:
+
+```sh
+curl http://127.0.0.1:3301/verification-document
+```
+
+The JSON includes the accepted release digest and measurements, attested key
+fingerprints, verifier identity and version, and the local time verification
+completed. Its `runtime.instanceId` is generated once per proxy process and
+`runtime.listener` identifies the listener serving the document. A successful
+upstream re-verification replaces the verification fields while preserving the
+runtime identity. Responses use `Cache-Control: no-store`.
+
 ## Prompt Cache Scoping
 
 The inference router derives each prompt-cache namespace from both the authenticated API identity and `user_cache_secret`. Requests under the same API identity and secret can share cached prompt prefixes and therefore cache-hit timing; changing either component separates that timing-sharing boundary.

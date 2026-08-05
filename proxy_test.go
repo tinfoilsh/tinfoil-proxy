@@ -15,7 +15,113 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	verifierclient "github.com/tinfoilsh/tinfoil-go/verifier/client"
 )
+
+func TestVerificationDocumentHandler(t *testing.T) {
+	document := &verifierclient.VerificationDocument{
+		SchemaVersion:    1,
+		ConfigRepo:       "tinfoilsh/confidential-model-router",
+		EnclaveHost:      "router.tinfoil.sh",
+		ReleaseDigest:    "digest-1",
+		SecurityVerified: true,
+		Verifier: verifierclient.SoftwareIdentity{
+			Name:    "tinfoil-go",
+			Version: "v1.0.0",
+		},
+		VerifiedAt: "2026-08-04T12:30:00Z",
+	}
+	reloading := newReloadingUpstream(&upstream{
+		host: "router.tinfoil.sh",
+		verificationDocument: func() *verifierclient.VerificationDocument {
+			return document
+		},
+	}, nil)
+	runtime := proxyRuntime{
+		InstanceID: "instance-1",
+		Listener:   "127.0.0.1:3301",
+		Software: verifierclient.SoftwareIdentity{
+			Name:    proxySoftwareName,
+			Version: "v0.2.0",
+		},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, verificationPath, nil)
+
+	verificationDocumentHandler(reloading, runtime).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, recorder.Code)
+	}
+	if recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("expected JSON content type, got %q", recorder.Header().Get("Content-Type"))
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache policy, got %q", recorder.Header().Get("Cache-Control"))
+	}
+	var response proxyVerificationDocument
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ReleaseDigest != "digest-1" {
+		t.Fatalf("expected active document digest, got %q", response.ReleaseDigest)
+	}
+	if response.Runtime.InstanceID != runtime.InstanceID || response.Runtime.Listener != runtime.Listener {
+		t.Fatalf("expected runtime binding %+v, got %+v", runtime, response.Runtime)
+	}
+}
+
+func TestListenerGuardAddressPreservesConfiguredHostAndActualPort(t *testing.T) {
+	if got := listenerGuardAddress("localhost:0", "127.0.0.1:43123"); got != "localhost:43123" {
+		t.Fatalf("expected configured host with actual port, got %q", got)
+	}
+}
+
+func TestVerificationDocumentHandlerRejectsOtherMethods(t *testing.T) {
+	reloading := newReloadingUpstream(&upstream{}, nil)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, verificationPath, nil)
+
+	verificationDocumentHandler(reloading, proxyRuntime{}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, recorder.Code)
+	}
+	if recorder.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("expected Allow header to contain GET, got %q", recorder.Header().Get("Allow"))
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache policy, got %q", recorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestVerificationDocumentHandlerUsesReloadedUpstream(t *testing.T) {
+	document := func(digest string) func() *verifierclient.VerificationDocument {
+		return func() *verifierclient.VerificationDocument {
+			return &verifierclient.VerificationDocument{ReleaseDigest: digest}
+		}
+	}
+	reloading := newReloadingUpstream(&upstream{verificationDocument: document("old")}, nil)
+	runtime := proxyRuntime{InstanceID: "stable-instance"}
+	handler := verificationDocumentHandler(reloading, runtime)
+
+	reloading.mu.Lock()
+	reloading.current = &upstream{verificationDocument: document("new")}
+	reloading.mu.Unlock()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, verificationPath, nil))
+
+	var response proxyVerificationDocument
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ReleaseDigest != "new" {
+		t.Fatalf("expected reloaded document, got %q", response.ReleaseDigest)
+	}
+	if response.Runtime.InstanceID != runtime.InstanceID {
+		t.Fatalf("expected stable instance ID, got %q", response.Runtime.InstanceID)
+	}
+}
 
 func TestExtractTokenUsageSupportsChatUsage(t *testing.T) {
 	upstreamed, downstreamed, ok := extractTokenUsage([]byte(`{"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`))

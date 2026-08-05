@@ -102,7 +102,7 @@ jobs:
               "windows amd64 tinfoil-proxy-windows-amd64.exe"; do
             set -- $target
             CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
-              go build -trimpath -ldflags="-s -w" -o "release-bin/$3" .
+              go build -trimpath -ldflags="-s -w -X main.buildVersion=${GITHUB_REF_NAME}" -o "release-bin/$3" .
           done
           ls -la release-bin
 
@@ -158,6 +158,7 @@ jobs:
           IMAGE="ghcr.io/${OWNER_LC}/tinfoil-proxy"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="${TAG}" \
             --tag "${IMAGE}:${VERSION}" \
             --tag "${IMAGE}:latest" \
             --push .

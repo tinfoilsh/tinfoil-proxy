@@ -5,9 +5,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG TARGETOS TARGETARCH
+ARG TARGETOS TARGETARCH VERSION=unknown
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /tinfoil-proxy .
+    go build -trimpath -ldflags="-s -w -X main.buildVersion=$VERSION" -o /tinfoil-proxy .
 
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates

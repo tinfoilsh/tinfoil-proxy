@@ -14,13 +14,14 @@ case "$TARGET_OS" in
   windows) BIN_NAME="tinfoil-proxy.exe" ;;
 esac
 OUT="$OUT_DIR/$BIN_NAME"
+VERSION="v$(node -p "require('$APP_DIR/package.json').version")"
 
 cd "$ROOT"
 
 build_one() {
   local goos="$1" goarch="$2" out="$3"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -trimpath -ldflags="-s -w" -o "$out" .
+    go build -trimpath -ldflags="-s -w -X main.buildVersion=$VERSION" -o "$out" .
 }
 
 case "$TARGET_OS" in
