@@ -8,8 +8,7 @@ const IGNORES = [
   'dist/**',
   'node_modules/**',
   'resources/**',
-  '.vite/**',
-  'build/icon.iconset/**'
+  '.vite/**'
 ]
 
 const SHARED_RULES = {
