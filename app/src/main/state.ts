@@ -17,6 +17,7 @@ export interface ProxyState {
   upstreamedTokens: number
   downstreamedTokens: number
   enclave?: string
+  verifiedAt?: string
   lastError?: string
 }
 
