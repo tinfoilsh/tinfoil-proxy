@@ -198,14 +198,17 @@ func TestVerificationNotificationsAllowClockRegressionOnCurrentUpstream(t *testi
 	reloading.onVerificationChange = func(document *verifierclient.VerificationDocument) {
 		notifications = append(notifications, document.VerifiedAt)
 	}
+	_, generation := reloading.snapshot()
 
-	document = &verifierclient.VerificationDocument{VerifiedAt: "2026-08-05T00:02:00Z"}
-	reloading.notifyVerificationChange(current)
-	document = &verifierclient.VerificationDocument{VerifiedAt: "2026-08-05T00:01:00Z"}
-	reloading.notifyVerificationChange(current)
+	document = &verifierclient.VerificationDocument{VerifiedAt: "2026-08-05T00:02:00Z", EnclaveHost: "router-a.example"}
+	reloading.notifyVerificationChange(current, generation)
+	document = &verifierclient.VerificationDocument{VerifiedAt: "2026-08-05T00:01:00Z", EnclaveHost: "router-a.example"}
+	reloading.notifyVerificationChange(current, generation)
+	document = &verifierclient.VerificationDocument{VerifiedAt: "2026-08-05T00:01:00Z", EnclaveHost: "router-b.example"}
+	reloading.notifyVerificationChange(current, generation)
 
-	if len(notifications) != 2 || notifications[1] != "2026-08-05T00:01:00Z" {
-		t.Fatalf("expected both verification events despite clock regression, got %v", notifications)
+	if len(notifications) != 3 || notifications[2] != "2026-08-05T00:01:00Z" {
+		t.Fatalf("expected clock regression and same-time router change, got %v", notifications)
 	}
 }
 
@@ -219,11 +222,12 @@ func TestVerificationNotificationsIgnoreReplacedUpstream(t *testing.T) {
 	reloading.onVerificationChange = func(*verifierclient.VerificationDocument) {
 		t.Fatal("stale upstream emitted a verification update")
 	}
+	_, generation := reloading.snapshot()
 	reloading.notifyVerificationChange(&upstream{
 		verificationDocument: func() *verifierclient.VerificationDocument {
 			return &verifierclient.VerificationDocument{VerifiedAt: "2026-08-05T00:01:00Z"}
 		},
-	})
+	}, generation)
 }
 
 func TestExtractTokenUsageSupportsChatUsage(t *testing.T) {

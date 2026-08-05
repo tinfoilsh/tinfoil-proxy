@@ -358,37 +358,54 @@ var errReloadCoolingDown = errors.New("upstream reload attempted too recently")
 type reloadingUpstream struct {
 	build func() (*upstream, error)
 
-	mu      sync.RWMutex
-	current *upstream
+	mu         sync.RWMutex
+	current    *upstream
+	generation uint64
 
 	reloadMu    sync.Mutex
 	lastAttempt time.Time
 
 	documentMu           sync.Mutex
-	lastVerifiedAt       string
+	lastDocumentKey      verificationDocumentKey
 	onVerificationChange func(*verifierclient.VerificationDocument)
+}
+
+type verificationDocumentKey struct {
+	verifiedAt         string
+	enclaveHost        string
+	releaseTag         string
+	releaseDigest      string
+	tlsPublicKey       string
+	hpkePublicKey      string
+	codeFingerprint    string
+	enclaveFingerprint string
 }
 
 func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
 	reloading := &reloadingUpstream{build: build, current: initial}
 	if initial.verificationDocument != nil {
 		if document := initial.verificationDocument(); document != nil {
-			reloading.lastVerifiedAt = document.VerifiedAt
+			reloading.lastDocumentKey = documentKey(document)
 		}
 	}
 	return reloading
 }
 
 func (r *reloadingUpstream) get() *upstream {
+	current, _ := r.snapshot()
+	return current
+}
+
+func (r *reloadingUpstream) snapshot() (*upstream, uint64) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.current
+	return r.current, r.generation
 }
 
 func (r *reloadingUpstream) RoundTrip(req *http.Request) (*http.Response, error) {
-	current := r.get()
+	current, generation := r.snapshot()
 	resp, err := current.transport.RoundTrip(requestForHost(req, current.host))
-	r.notifyVerificationChange(current)
+	r.notifyVerificationChange(current, generation)
 	if err == nil {
 		return resp, nil
 	}
@@ -405,7 +422,8 @@ func (r *reloadingUpstream) RoundTrip(req *http.Request) (*http.Response, error)
 		return nil, err
 	}
 	resp, err = next.transport.RoundTrip(retry)
-	r.notifyVerificationChange(next)
+	_, generation = r.snapshot()
+	r.notifyVerificationChange(next, generation)
 	return resp, err
 }
 
@@ -433,16 +451,20 @@ func (r *reloadingUpstream) reload(failed *upstream) (*upstream, error) {
 	}
 	r.mu.Lock()
 	r.current = next
+	r.generation++
+	generation := r.generation
 	r.mu.Unlock()
-	r.notifyVerificationChange(next)
+	r.notifyVerificationChange(next, generation)
 	log.WithField("enclave_host", next.host).Info("router reselection succeeded")
 	return next, nil
 }
 
-func (r *reloadingUpstream) notifyVerificationChange(current *upstream) {
+func (r *reloadingUpstream) notifyVerificationChange(current *upstream, generation uint64) {
 	r.documentMu.Lock()
 	defer r.documentMu.Unlock()
-	if r.get() != current {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.current != current || r.generation != generation {
 		return
 	}
 	if current.verificationDocument == nil {
@@ -452,12 +474,26 @@ func (r *reloadingUpstream) notifyVerificationChange(current *upstream) {
 	if document == nil || document.VerifiedAt == "" {
 		return
 	}
-	if document.VerifiedAt == r.lastVerifiedAt {
+	key := documentKey(document)
+	if key == r.lastDocumentKey {
 		return
 	}
-	r.lastVerifiedAt = document.VerifiedAt
+	r.lastDocumentKey = key
 	if r.onVerificationChange != nil {
 		r.onVerificationChange(document)
+	}
+}
+
+func documentKey(document *verifierclient.VerificationDocument) verificationDocumentKey {
+	return verificationDocumentKey{
+		verifiedAt:         document.VerifiedAt,
+		enclaveHost:        document.EnclaveHost,
+		releaseTag:         document.ReleaseTag,
+		releaseDigest:      document.ReleaseDigest,
+		tlsPublicKey:       document.TLSPublicKey,
+		hpkePublicKey:      document.HPKEPublicKey,
+		codeFingerprint:    document.CodeFingerprint,
+		enclaveFingerprint: document.EnclaveFingerprint,
 	}
 }
 
