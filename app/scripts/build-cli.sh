@@ -14,7 +14,11 @@ case "$TARGET_OS" in
   windows) BIN_NAME="tinfoil-proxy.exe" ;;
 esac
 OUT="$OUT_DIR/$BIN_NAME"
-VERSION="v$(node -p "require('$APP_DIR/package.json').version")"
+PACKAGE_JSON="$APP_DIR/package.json"
+if command -v cygpath >/dev/null 2>&1; then
+  PACKAGE_JSON="$(cygpath -w "$PACKAGE_JSON")"
+fi
+VERSION="v$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$PACKAGE_JSON")"
 
 cd "$ROOT"
 
