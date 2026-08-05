@@ -379,6 +379,10 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     return null
   }
 
+  // The desktop app ships and trusts this proxy binary as its active verifier.
+  // Binding the document to this process and listener avoids a second verifier
+  // with independently changing release selection rather than adding a new
+  // trust root.
   sendSignal(proc, 'go')
   setProxyState({ running: true, verifying: false, verified: true, lastError: undefined })
   return { port, endpoint: proxyEndpoint(port) }
