@@ -290,26 +290,6 @@ export default function App() {
           </button>
         )}
 
-        {active && state.proxy.verifiedAt && (
-          <div className="verification-row">
-            <div className="verification-time">
-              <span className="verification-label">Last verified</span>
-              <time dateTime={state.proxy.verifiedAt} title={state.proxy.verifiedAt}>
-                {formatVerificationTime(state.proxy.verifiedAt)}
-              </time>
-            </div>
-            <button
-              type="button"
-              className="verification-link"
-              onClick={() => {
-                void onViewVerificationData()
-              }}
-            >
-              View verification data
-            </button>
-          </div>
-        )}
-
         {enabled && (
           <div className="token-row" aria-label="Live proxy token usage">
             <div className="token-stat" title={formatFullTokenCount(state.proxy.upstreamedTokens)}>
@@ -351,6 +331,26 @@ export default function App() {
             )}
           </button>
         </div>
+
+        {active && state.proxy.verifiedAt && (
+          <div className="verification-row">
+            <div className="verification-time">
+              <span className="verification-label">Last verified</span>
+              <time dateTime={state.proxy.verifiedAt} title={state.proxy.verifiedAt}>
+                {formatVerificationTime(state.proxy.verifiedAt)}
+              </time>
+            </div>
+            <button
+              type="button"
+              className="verification-link"
+              onClick={() => {
+                void onViewVerificationData()
+              }}
+            >
+              View verification data
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
