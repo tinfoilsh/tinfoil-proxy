@@ -1,6 +1,6 @@
 import { clipboard, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 
-import { loadConfig, saveConfig } from './config.js'
+import { loadConfig, saveConfig, sanitizeAllowedHosts } from './config.js'
 import { PROXY_DEFAULT_PORT } from './constants.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
 import { getPopup, notifyPopup, setPopupCompactHeight } from './popup.js'
@@ -80,7 +80,7 @@ export function registerIpc(): void {
     const cfg = await loadConfig()
     const nextEnabled = !!enabled
     if (nextEnabled) {
-      await startProxy(cfg.port || PROXY_DEFAULT_PORT)
+      await startProxy(cfg.port || PROXY_DEFAULT_PORT, cfg.allowedHosts)
     } else {
       await stopProxy()
       const current = stateStore.get().proxy
@@ -107,9 +107,23 @@ export function registerIpc(): void {
     await saveConfig({ ...cfg, port: clamped })
     const proxy = stateStore.get().proxy
     if (proxy.enabled) {
-      await startProxy(clamped)
+      await startProxy(clamped, cfg.allowedHosts)
     } else {
       stateStore.set({ proxy: { ...proxy, port: clamped } })
+    }
+    return snapshotForRenderer(stateStore.get())
+  })
+
+  ipcMain.handle('tray:setAllowedHosts', async (event, hosts: unknown) => {
+    if (!isFromPopup(event)) return null
+    const sanitized = sanitizeAllowedHosts(hosts)
+    const cfg = await loadConfig()
+    await saveConfig({ ...cfg, allowedHosts: sanitized })
+    const proxy = stateStore.get().proxy
+    if (proxy.enabled) {
+      await startProxy(cfg.port, sanitized)
+    } else {
+      stateStore.set({ proxy: { ...proxy, allowedHosts: sanitized } })
     }
     return snapshotForRenderer(stateStore.get())
   })

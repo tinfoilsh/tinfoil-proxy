@@ -13,6 +13,7 @@ export interface ProxySnapshot {
   verifying: boolean
   verified: boolean
   port: number
+  allowedHosts: string[]
   upstreamedTokens: number
   downstreamedTokens: number
   enclave?: string
@@ -40,6 +41,8 @@ const api = {
     ipcRenderer.invoke('tray:setProxyEnabled', enabled),
   setProxyPort: (port: number): Promise<TrayStateSnapshot> =>
     ipcRenderer.invoke('tray:setProxyPort', port),
+  setAllowedHosts: (hosts: string[]): Promise<TrayStateSnapshot> =>
+    ipcRenderer.invoke('tray:setAllowedHosts', hosts),
   refreshRouters: (): Promise<TrayStateSnapshot> =>
     ipcRenderer.invoke('tray:refreshRouters'),
   setLaunchAtLogin: (enabled: boolean): Promise<TrayStateSnapshot> =>

@@ -8,11 +8,15 @@ export interface PersistedConfig {
   port: number
   proxyEnabled: boolean
   launchAtLogin: boolean
+  allowedHosts: string[]
 }
 
 const FILE_NAME = 'config.json'
 const MIN_PORT = 1
 const MAX_PORT = 65535
+const MAX_ALLOWED_HOSTS = 32
+const MAX_HOSTNAME_LENGTH = 253
+const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i
 
 function configPath(): string {
   return join(app.getPath('userData'), FILE_NAME)
@@ -27,6 +31,35 @@ function isValidPort(value: unknown): value is number {
   )
 }
 
+// Accepts a hostname with an optional :port suffix, mirroring what the
+// proxy binary's --allowed-host flag understands.
+export function normalizeAllowedHost(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim().toLowerCase()
+  if (trimmed.length === 0 || trimmed.length > MAX_HOSTNAME_LENGTH) return null
+  const colonIndex = trimmed.lastIndexOf(':')
+  let host = trimmed
+  if (colonIndex !== -1) {
+    const port = Number(trimmed.slice(colonIndex + 1))
+    if (!isValidPort(port)) return null
+    host = trimmed.slice(0, colonIndex)
+  }
+  if (!HOSTNAME_PATTERN.test(host)) return null
+  return trimmed
+}
+
+export function sanitizeAllowedHosts(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const hosts: string[] = []
+  for (const entry of value) {
+    const normalized = normalizeAllowedHost(entry)
+    if (normalized === null || hosts.includes(normalized)) continue
+    hosts.push(normalized)
+    if (hosts.length >= MAX_ALLOWED_HOSTS) break
+  }
+  return hosts
+}
+
 export async function loadConfig(): Promise<PersistedConfig> {
   try {
     const raw = await fs.readFile(configPath(), 'utf8')
@@ -39,9 +72,10 @@ export async function loadConfig(): Promise<PersistedConfig> {
           ? parsed.systemProxyEnabled
           : true
     const launchAtLogin = typeof parsed.launchAtLogin === 'boolean' ? parsed.launchAtLogin : false
-    return { port, proxyEnabled, launchAtLogin }
+    const allowedHosts = sanitizeAllowedHosts(parsed.allowedHosts)
+    return { port, proxyEnabled, launchAtLogin, allowedHosts }
   } catch {
-    return { port: PROXY_DEFAULT_PORT, proxyEnabled: true, launchAtLogin: false }
+    return { port: PROXY_DEFAULT_PORT, proxyEnabled: true, launchAtLogin: false, allowedHosts: [] }
   }
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { PiArrowsClockwise, PiSpinner } from 'react-icons/pi'
+import { PiArrowsClockwise, PiCaretRight, PiSpinner, PiX } from 'react-icons/pi'
 
 const REFRESH_MIN_SPIN_MS = 1000
 const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat(undefined, {
@@ -49,6 +49,25 @@ function formatFullTokenCount(count: number): string {
 function formatVerificationTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : VERIFICATION_TIME_FORMATTER.format(date)
+}
+
+const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i
+const MAX_HOSTNAME_LENGTH = 253
+
+// Mirrors the main-process validation in config.ts so invalid entries are
+// caught before the IPC round trip.
+function normalizeAllowedHost(value: string): string | null {
+  const trimmed = value.trim().toLowerCase()
+  if (trimmed.length === 0 || trimmed.length > MAX_HOSTNAME_LENGTH) return null
+  const colonIndex = trimmed.lastIndexOf(':')
+  let host = trimmed
+  if (colonIndex !== -1) {
+    const port = Number(trimmed.slice(colonIndex + 1))
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+    host = trimmed.slice(0, colonIndex)
+  }
+  if (!HOSTNAME_PATTERN.test(host)) return null
+  return trimmed
 }
 
 type LockState = 'verified' | 'failed' | 'off' | 'initializing'
@@ -142,6 +161,38 @@ export default function App() {
     const updated = await window.tinfoil.setLaunchAtLogin(!state.launchAtLogin)
     setState(updated)
   }, [state])
+
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [hostInput, setHostInput] = useState('')
+  const [hostError, setHostError] = useState(false)
+
+  const onAddAllowedHost = useCallback(async () => {
+    if (!state) return
+    const normalized = normalizeAllowedHost(hostInput)
+    if (normalized === null) {
+      setHostError(hostInput.trim().length > 0)
+      return
+    }
+    setHostError(false)
+    setHostInput('')
+    if (state.proxy.allowedHosts.includes(normalized)) return
+    const updated = await window.tinfoil.setAllowedHosts([
+      ...state.proxy.allowedHosts,
+      normalized
+    ])
+    setState(updated)
+  }, [hostInput, state])
+
+  const onRemoveAllowedHost = useCallback(
+    async (host: string) => {
+      if (!state) return
+      const updated = await window.tinfoil.setAllowedHosts(
+        state.proxy.allowedHosts.filter((h) => h !== host)
+      )
+      setState(updated)
+    },
+    [state]
+  )
 
   const [copied, setCopied] = useState(false)
   const onCopyEndpoint = useCallback(async () => {
@@ -351,6 +402,85 @@ export default function App() {
             </button>
           </div>
         )}
+
+        <div className="advanced">
+          <button
+            type="button"
+            className="advanced-toggle"
+            onClick={() => setAdvancedOpen((open) => !open)}
+            aria-expanded={advancedOpen}
+          >
+            <PiCaretRight
+              size={12}
+              className={`advanced-caret ${advancedOpen ? 'advanced-caret-open' : ''}`}
+              aria-hidden="true"
+            />
+            <span>Advanced settings</span>
+          </button>
+          {advancedOpen && (
+            <div className="advanced-body">
+              <div className="allowed-hosts-header">
+                <span className="allowed-hosts-label">Allowed hosts</span>
+                <span className="allowed-hosts-hint">
+                  Extra Host headers accepted by the proxy, for use behind a reverse proxy.
+                </span>
+              </div>
+              {state.proxy.allowedHosts.length > 0 && (
+                <ul className="allowed-hosts-list">
+                  {state.proxy.allowedHosts.map((host) => (
+                    <li key={host} className="allowed-host-item">
+                      <span className="allowed-host-name">{host}</span>
+                      <button
+                        type="button"
+                        className="allowed-host-remove"
+                        onClick={() => {
+                          void onRemoveAllowedHost(host)
+                        }}
+                        title={`Remove ${host}`}
+                        aria-label={`Remove ${host}`}
+                      >
+                        <PiX size={11} aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="allowed-host-add">
+                <input
+                  className={`allowed-host-input ${hostError ? 'allowed-host-input-error' : ''}`}
+                  type="text"
+                  placeholder="hostname or hostname:port"
+                  value={hostInput}
+                  onChange={(e) => {
+                    setHostInput(e.target.value)
+                    setHostError(false)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      void onAddAllowedHost()
+                    }
+                  }}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+                <button
+                  type="button"
+                  className="allowed-host-add-button"
+                  onClick={() => {
+                    void onAddAllowedHost()
+                  }}
+                  disabled={hostInput.trim().length === 0}
+                >
+                  Add
+                </button>
+              </div>
+              {hostError && (
+                <div className="allowed-host-error">Enter a valid hostname, optionally with a port.</div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

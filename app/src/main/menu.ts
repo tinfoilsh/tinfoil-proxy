@@ -124,7 +124,7 @@ async function toggleLaunchAtLogin(enable: boolean): Promise<void> {
 async function toggle(enable: boolean): Promise<void> {
   const cfg = await loadConfig()
   if (enable) {
-    await startProxy(cfg.port)
+    await startProxy(cfg.port, cfg.allowedHosts)
   } else {
     await stopProxy()
     const current = stateStore.get().proxy

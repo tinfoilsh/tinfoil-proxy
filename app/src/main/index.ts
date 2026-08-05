@@ -46,6 +46,7 @@ async function bootstrap(): Promise<void> {
       verifying: false,
       verified: false,
       port: cfg.port,
+      allowedHosts: cfg.allowedHosts,
       upstreamedTokens: 0,
       downstreamedTokens: 0,
       enclave: undefined,
@@ -57,7 +58,7 @@ async function bootstrap(): Promise<void> {
   applyLaunchAtLogin(cfg.launchAtLogin)
 
   if (cfg.proxyEnabled) {
-    await startProxy(cfg.port)
+    await startProxy(cfg.port, cfg.allowedHosts)
   }
 
   void refreshRouters()

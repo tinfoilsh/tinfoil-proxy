@@ -14,6 +14,7 @@ export interface ProxyState {
   verifying: boolean
   verified: boolean
   port: number
+  allowedHosts: string[]
   upstreamedTokens: number
   downstreamedTokens: number
   enclave?: string
@@ -65,6 +66,7 @@ export const stateStore = new StateStore({
     verifying: false,
     verified: false,
     port: 0,
+    allowedHosts: [],
     upstreamedTokens: 0,
     downstreamedTokens: 0
   },
