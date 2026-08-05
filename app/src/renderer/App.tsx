@@ -210,6 +210,7 @@ export default function App() {
   const onRemoveAllowedHost = useCallback(
     async (host: string) => {
       if (!state || hostsBusy) return
+      setHostError(null)
       setHostsBusy(true)
       try {
         const updated = await window.tinfoil.setAllowedHosts(
