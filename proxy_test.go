@@ -271,6 +271,81 @@ func TestLocalOnlyGuardAllowsConfiguredContainerHostOnUnspecifiedBind(t *testing
 	}
 }
 
+func TestLocalOnlyGuardAllowsPortlessHostForConfiguredHostname(t *testing.T) {
+	withAllowedHostnames(t, []string{"macstudio.tailnet.ts.net"})
+	for _, host := range []string{"macstudio.tailnet.ts.net", "macstudio.tailnet.ts.net:3301"} {
+		t.Run(host, func(t *testing.T) {
+			nextCalled := false
+			guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodGet, "http://"+host+"/v1", nil)
+			req.Host = host
+			rec := httptest.NewRecorder()
+
+			guard.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("expected %d, got %d", http.StatusNoContent, rec.Code)
+			}
+			if !nextCalled {
+				t.Fatal("expected next handler to be called")
+			}
+		})
+	}
+}
+
+func TestLocalOnlyGuardKeepsPortRequiredForConfiguredHostPort(t *testing.T) {
+	withAllowedHostnames(t, []string{"macstudio.tailnet.ts.net:443"})
+	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://macstudio.tailnet.ts.net/v1", nil)
+	req.Host = "macstudio.tailnet.ts.net"
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestLocalOnlyGuardRejectsPortlessHostWithoutConfiguration(t *testing.T) {
+	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1", nil)
+	req.Host = "127.0.0.1"
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestLocalOnlyGuardRejectsPortlessOSHostnameOnUnspecifiedBind(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		t.Skip("no OS hostname available")
+	}
+	guard := localOnlyGuard("0.0.0.0:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "http://"+hostname+"/v1", nil)
+	req.Host = hostname
+	rec := httptest.NewRecorder()
+
+	guard.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
 func TestLocalOnlyGuardAllowsLoopbackHostOnUnspecifiedBind(t *testing.T) {
 	nextCalled := false
 	guard := localOnlyGuard("0.0.0.0:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

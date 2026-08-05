@@ -552,7 +552,7 @@ func allowedHosts(addr string) map[string]struct{} {
 		}
 	}
 	for _, host := range allowedHostnames {
-		addAllowedHost(allowed, host, port)
+		addExplicitAllowedHost(allowed, host, port)
 	}
 	return allowed
 }
@@ -563,6 +563,20 @@ func addAllowedHost(allowed map[string]struct{}, host, port string) {
 		return
 	}
 	allowed[net.JoinHostPort(host, port)] = struct{}{}
+}
+
+// addExplicitAllowedHost registers an operator-supplied --allowed-host value.
+// A TLS-terminating reverse proxy in front of the listener forwards the
+// client-facing Host header, which omits default ports (443/80) per RFC 9110.
+// Portless values therefore also match the bare hostname, alongside the
+// listen-port form used for direct requests. This only widens matching for
+// hosts the operator explicitly opted into, so the DNS-rebinding protection
+// for everything else is unchanged.
+func addExplicitAllowedHost(allowed map[string]struct{}, host, port string) {
+	addAllowedHost(allowed, host, port)
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		allowed[host] = struct{}{}
+	}
 }
 
 func isUnspecifiedBind(host string) bool {
