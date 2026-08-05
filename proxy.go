@@ -57,6 +57,11 @@ type proxyVerificationDocument struct {
 	Runtime proxyRuntime `json:"runtime"`
 }
 
+type verificationMessage struct {
+	Event                string                     `json:"event"`
+	VerificationDocument *proxyVerificationDocument `json:"verification_document"`
+}
+
 type tokenStatsMessage struct {
 	Event        string `json:"event"`
 	Upstreamed   uint64 `json:"upstreamed"`
@@ -91,6 +96,13 @@ func emitReady(instanceID, enclave, repo, listen string, document *proxyVerifica
 		VerificationDocument: document,
 	}
 	return emitJSONLine(msg)
+}
+
+func emitVerification(document *proxyVerificationDocument) error {
+	return emitJSONLine(verificationMessage{
+		Event:                "verification",
+		VerificationDocument: document,
+	})
 }
 
 func emitTokenStats(msg tokenStatsMessage) error {
@@ -173,6 +185,16 @@ func runProxy(cmd *cobra.Command, args []string) error {
 			Name:    proxySoftwareName,
 			Version: proxyVersion(),
 		},
+	}
+	if handshake {
+		reloading.onVerificationChange = func(document *verifierclient.VerificationDocument) {
+			if err := emitVerification(&proxyVerificationDocument{
+				VerificationDocument: document,
+				Runtime:              runtime,
+			}); err != nil {
+				log.WithError(err).Warn("failed to emit updated verification document")
+			}
+		}
 	}
 	mux := http.NewServeMux()
 	mux.Handle(verificationPath, verificationDocumentHandler(reloading, runtime))
@@ -341,10 +363,20 @@ type reloadingUpstream struct {
 
 	reloadMu    sync.Mutex
 	lastAttempt time.Time
+
+	documentMu           sync.Mutex
+	lastVerifiedAt       string
+	onVerificationChange func(*verifierclient.VerificationDocument)
 }
 
 func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
-	return &reloadingUpstream{build: build, current: initial}
+	reloading := &reloadingUpstream{build: build, current: initial}
+	if initial.verificationDocument != nil {
+		if document := initial.verificationDocument(); document != nil {
+			reloading.lastVerifiedAt = document.VerifiedAt
+		}
+	}
+	return reloading
 }
 
 func (r *reloadingUpstream) get() *upstream {
@@ -356,7 +388,11 @@ func (r *reloadingUpstream) get() *upstream {
 func (r *reloadingUpstream) RoundTrip(req *http.Request) (*http.Response, error) {
 	current := r.get()
 	resp, err := current.transport.RoundTrip(requestForHost(req, current.host))
-	if err == nil || req.Context().Err() != nil {
+	r.notifyVerificationChange(current)
+	if err == nil {
+		return resp, nil
+	}
+	if req.Context().Err() != nil {
 		return resp, err
 	}
 
@@ -368,7 +404,9 @@ func (r *reloadingUpstream) RoundTrip(req *http.Request) (*http.Response, error)
 	if !ok {
 		return nil, err
 	}
-	return next.transport.RoundTrip(retry)
+	resp, err = next.transport.RoundTrip(retry)
+	r.notifyVerificationChange(next)
+	return resp, err
 }
 
 // reload swaps in a freshly verified upstream. Concurrent failing requests
@@ -396,8 +434,31 @@ func (r *reloadingUpstream) reload(failed *upstream) (*upstream, error) {
 	r.mu.Lock()
 	r.current = next
 	r.mu.Unlock()
+	r.notifyVerificationChange(next)
 	log.WithField("enclave_host", next.host).Info("router reselection succeeded")
 	return next, nil
+}
+
+func (r *reloadingUpstream) notifyVerificationChange(current *upstream) {
+	r.documentMu.Lock()
+	defer r.documentMu.Unlock()
+	if r.get() != current {
+		return
+	}
+	if current.verificationDocument == nil {
+		return
+	}
+	document := current.verificationDocument()
+	if document == nil || document.VerifiedAt == "" {
+		return
+	}
+	if document.VerifiedAt == r.lastVerifiedAt {
+		return
+	}
+	r.lastVerifiedAt = document.VerifiedAt
+	if r.onVerificationChange != nil {
+		r.onVerificationChange(document)
+	}
 }
 
 func requestForHost(req *http.Request, host string) *http.Request {
