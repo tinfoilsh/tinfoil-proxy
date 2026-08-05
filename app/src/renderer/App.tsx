@@ -7,6 +7,10 @@ const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 1
 })
 const FULL_TOKEN_COUNT_FORMATTER = new Intl.NumberFormat()
+const VERIFICATION_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short'
+})
 
 type TrayState = Awaited<ReturnType<typeof window.tinfoil.getState>>
 
@@ -40,6 +44,11 @@ function formatTokenCount(count: number): string {
 
 function formatFullTokenCount(count: number): string {
   return `${FULL_TOKEN_COUNT_FORMATTER.format(count)} tokens`
+}
+
+function formatVerificationTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : VERIFICATION_TIME_FORMATTER.format(date)
 }
 
 type LockState = 'verified' | 'failed' | 'off' | 'initializing'
@@ -140,6 +149,10 @@ export default function App() {
     if (!value) return
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
+  }, [])
+
+  const onViewVerificationData = useCallback(async () => {
+    await window.tinfoil.openVerificationDocument()
   }, [])
 
   const [refreshing, setRefreshing] = useState(false)
@@ -318,6 +331,26 @@ export default function App() {
             )}
           </button>
         </div>
+
+        {active && state.proxy.verifiedAt && (
+          <div className="verification-row">
+            <div className="verification-time">
+              <span className="verification-label">Last verified</span>
+              <time dateTime={state.proxy.verifiedAt} title={state.proxy.verifiedAt}>
+                {formatVerificationTime(state.proxy.verifiedAt)}
+              </time>
+            </div>
+            <button
+              type="button"
+              className="verification-link"
+              onClick={() => {
+                void onViewVerificationData()
+              }}
+            >
+              View verification data
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

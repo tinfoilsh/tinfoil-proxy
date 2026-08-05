@@ -1,10 +1,10 @@
-import { clipboard, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { clipboard, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 
 import { loadConfig, saveConfig } from './config.js'
 import { PROXY_DEFAULT_PORT } from './constants.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
 import { getPopup, notifyPopup, setPopupCompactHeight } from './popup.js'
-import { proxyEndpoint, startProxy, stopProxy } from './proxy.js'
+import { proxyEndpoint, startProxy, stopProxy, verificationDocumentEndpoint } from './proxy.js'
 import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
 
@@ -60,6 +60,19 @@ export function registerIpc(): void {
     if (!snap.endpoint) return null
     clipboard.writeText(snap.endpoint)
     return snap.endpoint
+  })
+
+  ipcMain.handle('tray:openVerificationDocument', async (event) => {
+    if (!isFromPopup(event)) return false
+    const proxy = stateStore.get().proxy
+    if (!proxy.running || !proxy.verified || proxy.port <= 0) return false
+    try {
+      await shell.openExternal(verificationDocumentEndpoint(proxy.port))
+      return true
+    } catch (err) {
+      console.error('[tray] failed to open verification document:', err)
+      return false
+    }
   })
 
   ipcMain.handle('tray:setProxyEnabled', async (event, enabled: boolean) => {

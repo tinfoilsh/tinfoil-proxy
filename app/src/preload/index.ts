@@ -16,6 +16,7 @@ export interface ProxySnapshot {
   upstreamedTokens: number
   downstreamedTokens: number
   enclave?: string
+  verifiedAt?: string
   lastError?: string
 }
 
@@ -33,6 +34,8 @@ export interface TrayStateSnapshot {
 const api = {
   getState: (): Promise<TrayStateSnapshot> => ipcRenderer.invoke('tray:getState'),
   copyEndpoint: (): Promise<string | null> => ipcRenderer.invoke('tray:copyEndpoint'),
+  openVerificationDocument: (): Promise<boolean> =>
+    ipcRenderer.invoke('tray:openVerificationDocument'),
   setProxyEnabled: (enabled: boolean): Promise<TrayStateSnapshot> =>
     ipcRenderer.invoke('tray:setProxyEnabled', enabled),
   setProxyPort: (port: number): Promise<TrayStateSnapshot> =>
