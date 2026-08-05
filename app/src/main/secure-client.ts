@@ -56,10 +56,7 @@ function updateGlobalStatus(): void {
   let lastError: string | undefined
   if (verified.length === entries.length) {
     status = 'verified'
-    statusMessage =
-      entries.length === 1
-        ? 'Attestation verified and key pinned'
-        : `All ${entries.length} routers verified`
+    statusMessage = 'Tinfoil Router Verified'
   } else if (failed.length > 0 && verified.length === 0) {
     status = 'failed'
     statusMessage = 'Attestation failed'
