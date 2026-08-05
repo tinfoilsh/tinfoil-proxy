@@ -6,6 +6,7 @@ import { app } from 'electron'
 import { z } from 'zod'
 
 import { PROXY_LISTEN_HOST } from './constants.js'
+import { verifyEnclave } from './secure-client.js'
 import { stateStore } from './state.js'
 
 const PROXY_STOP_GRACE_MS = 3000
@@ -24,6 +25,7 @@ const proxyVerificationDocumentSchema = z.object({
   schemaVersion: z.literal(1),
   configRepo: z.string().min(1),
   enclaveHost: z.string().min(1),
+  releaseTag: z.string().min(1).optional(),
   releaseDigest: z.string().min(1),
   codeMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
   enclaveMeasurement: z.object({
@@ -71,7 +73,12 @@ interface TokensMessage {
   downstreamed: number
 }
 
-type ProxyMessage = ReadyMessage | TokensMessage
+interface InvalidReadyMessage {
+  event: 'invalid-ready'
+  error: string
+}
+
+type ProxyMessage = ReadyMessage | TokensMessage | InvalidReadyMessage
 
 let child: CliProcess | undefined
 let intentionalShutdown = false
@@ -142,17 +149,26 @@ function parseProxyLine(line: string): ProxyMessage | null {
   if (!line.startsWith('{')) return null
   try {
     const parsed = JSON.parse(line) as Record<string, unknown>
-    if (
-      parsed.event === 'ready' &&
-      typeof parsed.instance_id === 'string' &&
-      typeof parsed.enclave === 'string' &&
-      typeof parsed.repo === 'string' &&
-      typeof parsed.listen === 'string' &&
-      typeof parsed.verification_document === 'object' &&
-      parsed.verification_document !== null
-    ) {
+    if (parsed.event === 'ready') {
+      if (
+        typeof parsed.instance_id !== 'string' ||
+        typeof parsed.enclave !== 'string' ||
+        typeof parsed.repo !== 'string' ||
+        typeof parsed.listen !== 'string' ||
+        typeof parsed.verification_document !== 'object' ||
+        parsed.verification_document === null
+      ) {
+        return { event: 'invalid-ready', error: 'proxy ready message is missing required fields' }
+      }
       const document = proxyVerificationDocumentSchema.safeParse(parsed.verification_document)
-      if (!document.success) return null
+      if (!document.success) {
+        const issue = document.error.issues[0]
+        const field = issue?.path.join('.') || 'verification_document'
+        return {
+          event: 'invalid-ready',
+          error: `verification document schema mismatch at ${field}: ${issue?.message ?? 'invalid value'}`
+        }
+      }
       return {
         event: 'ready',
         instanceId: parsed.instance_id,
@@ -270,6 +286,13 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     attachLogging(proc, logSink, (line) => {
       const message = parseProxyLine(line)
       if (!message) return
+      if (message.event === 'invalid-ready') {
+        settleReady(
+          () => reject(new Error(message.error)),
+          () => proc.off('close', onEarlyExit)
+        )
+        return
+      }
       if (message.event === 'tokens') {
         if (child !== proc || proc.exitCode !== null) return
         setProxyState({
@@ -346,6 +369,40 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
       verifying: false,
       verified: false,
       lastError: 'Proxy verification document does not match the running proxy instance'
+    })
+    sendSignal(proc, 'abort')
+    return null
+  }
+
+  const independentVerification = await verifyEnclave(ready.enclave)
+  if (child !== proc || proc.exitCode !== null) return null
+  if (!independentVerification.verified || !independentVerification.document) {
+    const reason = independentVerification.error ?? 'attestation could not be confirmed'
+    setProxyState({
+      running: false,
+      verifying: false,
+      verified: false,
+      lastError: `Independent verification of ${ready.enclave} failed: ${reason}`
+    })
+    sendSignal(proc, 'abort')
+    return null
+  }
+
+  const independentDocument = independentVerification.document
+  if (
+    independentDocument.configRepo !== document.configRepo ||
+    independentDocument.enclaveHost !== document.enclaveHost ||
+    independentDocument.releaseTag !== document.releaseTag ||
+    independentDocument.releaseDigest !== document.releaseDigest ||
+    independentDocument.tlsPublicKey !== document.tlsPublicKey ||
+    independentDocument.codeFingerprint !== document.codeFingerprint ||
+    independentDocument.enclaveFingerprint !== document.enclaveFingerprint
+  ) {
+    setProxyState({
+      running: false,
+      verifying: false,
+      verified: false,
+      lastError: 'Independent verification does not match the proxy verification document'
     })
     sendSignal(proc, 'abort')
     return null
