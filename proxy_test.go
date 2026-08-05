@@ -296,6 +296,31 @@ func TestLocalOnlyGuardAllowsPortlessHostForConfiguredHostname(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyGuardMatchesConfiguredHostnameCaseInsensitively(t *testing.T) {
+	withAllowedHostnames(t, []string{"MacStudio.Tailnet.ts.net"})
+	for _, host := range []string{"macstudio.tailnet.ts.net", "MACSTUDIO.TAILNET.TS.NET:3301"} {
+		t.Run(host, func(t *testing.T) {
+			nextCalled := false
+			guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodGet, "http://"+host+"/v1", nil)
+			req.Host = host
+			rec := httptest.NewRecorder()
+
+			guard.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("expected %d, got %d", http.StatusNoContent, rec.Code)
+			}
+			if !nextCalled {
+				t.Fatal("expected next handler to be called")
+			}
+		})
+	}
+}
+
 func TestLocalOnlyGuardKeepsPortRequiredForConfiguredHostPort(t *testing.T) {
 	withAllowedHostnames(t, []string{"macstudio.tailnet.ts.net:443"})
 	guard := localOnlyGuard("127.0.0.1:3301", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

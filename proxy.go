@@ -535,12 +535,16 @@ func replayableRequest(req *http.Request, host string) (*http.Request, bool) {
 	return retry, true
 }
 
+// allowedHosts builds the Host header allowlist. All entries are stored
+// lowercase and looked up against a lowercased Host header, since hostnames
+// are case-insensitive per RFC 9110.
 func allowedHosts(addr string) map[string]struct{} {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return map[string]struct{}{addr: {}}
+		return map[string]struct{}{strings.ToLower(addr): {}}
 	}
-	allowed := map[string]struct{}{net.JoinHostPort(host, port): {}}
+	allowed := map[string]struct{}{}
+	addAllowedHost(allowed, host, port)
 	if loopbackBinds[host] || isUnspecifiedBind(host) {
 		for alias := range loopbackBinds {
 			allowed[net.JoinHostPort(alias, port)] = struct{}{}
@@ -558,6 +562,7 @@ func allowedHosts(addr string) map[string]struct{} {
 }
 
 func addAllowedHost(allowed map[string]struct{}, host, port string) {
+	host = strings.ToLower(host)
 	if _, _, err := net.SplitHostPort(host); err == nil {
 		allowed[host] = struct{}{}
 		return
@@ -575,7 +580,7 @@ func addAllowedHost(allowed map[string]struct{}, host, port string) {
 func addExplicitAllowedHost(allowed map[string]struct{}, host, port string) {
 	addAllowedHost(allowed, host, port)
 	if _, _, err := net.SplitHostPort(host); err != nil {
-		allowed[host] = struct{}{}
+		allowed[strings.ToLower(host)] = struct{}{}
 	}
 }
 
@@ -587,7 +592,7 @@ func isUnspecifiedBind(host string) bool {
 func localOnlyGuard(addr string, next http.Handler) http.Handler {
 	hosts := allowedHosts(addr)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := hosts[r.Host]; !ok {
+		if _, ok := hosts[strings.ToLower(r.Host)]; !ok {
 			http.Error(w, "invalid Host header", http.StatusBadRequest)
 			return
 		}
