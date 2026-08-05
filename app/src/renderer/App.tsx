@@ -190,7 +190,7 @@ export default function App() {
       ? state.proxy.lastError
       : verifying
         ? state.proxy.enclave
-          ? `Independently verifying ${state.proxy.enclave} before any requests are sent.`
+          ? `Confirming the proxy's attested connection to ${state.proxy.enclave}.`
           : 'Waiting for the proxy to report its upstream enclave.'
         : verified && running
           ? 'Requests go directly to a Tinfoil enclave whose code and hardware have been attested, over a connection pinned to its verified key.'

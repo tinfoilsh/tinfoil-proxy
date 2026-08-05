@@ -3,9 +3,9 @@ import type { Readable, Writable } from 'node:stream'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
+import { z } from 'zod'
 
 import { PROXY_LISTEN_HOST } from './constants.js'
-import { verifyEnclave } from './secure-client.js'
 import { stateStore } from './state.js'
 
 const PROXY_STOP_GRACE_MS = 3000
@@ -15,11 +15,54 @@ const PORT_IN_USE_PATTERN = /address already in use|EADDRINUSE/i
 
 type CliProcess = ChildProcessByStdio<Writable, Readable, Readable>
 
+const verificationStepSchema = z.object({
+  status: z.enum(['success', 'skipped']),
+  error: z.string().optional()
+})
+
+const proxyVerificationDocumentSchema = z.object({
+  schemaVersion: z.literal(1),
+  configRepo: z.string().min(1),
+  enclaveHost: z.string().min(1),
+  releaseDigest: z.string().min(1),
+  codeMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
+  enclaveMeasurement: z.object({
+    measurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) })
+  }),
+  tlsPublicKey: z.string().min(1),
+  hpkePublicKey: z.string().min(1),
+  codeFingerprint: z.string().min(1),
+  enclaveFingerprint: z.string().min(1),
+  selectedRouterEndpoint: z.string().min(1),
+  securityVerified: z.literal(true),
+  verifier: z.object({ name: z.string().min(1), version: z.string().min(1) }),
+  verifiedAt: z.string().min(1),
+  steps: z.object({
+    fetchDigest: verificationStepSchema,
+    verifyCode: verificationStepSchema,
+    verifyEnclave: verificationStepSchema,
+    compareMeasurements: verificationStepSchema,
+    verifyCertificate: verificationStepSchema
+  }),
+  runtime: z.object({
+    instanceId: z.string().min(1),
+    listener: z.string().min(1),
+    software: z.object({
+      name: z.literal('tinfoil-proxy'),
+      version: z.string().min(1)
+    })
+  })
+})
+
+type ProxyVerificationDocument = z.infer<typeof proxyVerificationDocumentSchema>
+
 interface ReadyMessage {
   event: 'ready'
+  instanceId: string
   enclave: string
   repo: string
   listen: string
+  verificationDocument: ProxyVerificationDocument
 }
 
 interface TokensMessage {
@@ -101,11 +144,23 @@ function parseProxyLine(line: string): ProxyMessage | null {
     const parsed = JSON.parse(line) as Record<string, unknown>
     if (
       parsed.event === 'ready' &&
+      typeof parsed.instance_id === 'string' &&
       typeof parsed.enclave === 'string' &&
       typeof parsed.repo === 'string' &&
-      typeof parsed.listen === 'string'
+      typeof parsed.listen === 'string' &&
+      typeof parsed.verification_document === 'object' &&
+      parsed.verification_document !== null
     ) {
-      return { event: 'ready', enclave: parsed.enclave, repo: parsed.repo, listen: parsed.listen }
+      const document = proxyVerificationDocumentSchema.safeParse(parsed.verification_document)
+      if (!document.success) return null
+      return {
+        event: 'ready',
+        instanceId: parsed.instance_id,
+        enclave: parsed.enclave,
+        repo: parsed.repo,
+        listen: parsed.listen,
+        verificationDocument: document.data
+      }
     }
     if (
       parsed.event === 'tokens' &&
@@ -278,19 +333,19 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
 
   setProxyState({ enclave: ready.enclave })
 
-  const verification = await verifyEnclave(ready.enclave)
-
-  if (child !== proc || proc.exitCode !== null) {
-    return null
-  }
-
-  if (!verification.verified) {
-    const reason = verification.error ?? 'attestation could not be confirmed'
+  const document = ready.verificationDocument
+  if (
+    document.runtime.instanceId !== ready.instanceId ||
+    document.runtime.listener !== ready.listen ||
+    document.enclaveHost !== ready.enclave ||
+    document.configRepo !== ready.repo ||
+    ready.listen !== `${PROXY_LISTEN_HOST}:${port}`
+  ) {
     setProxyState({
       running: false,
       verifying: false,
       verified: false,
-      lastError: `Independent verification of ${ready.enclave} failed: ${reason}`
+      lastError: 'Proxy verification document does not match the running proxy instance'
     })
     sendSignal(proc, 'abort')
     return null

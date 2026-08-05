@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/tinfoilsh/tinfoil-go"
+	verifierclient "github.com/tinfoilsh/tinfoil-go/verifier/client"
 )
 
 const (
@@ -28,13 +32,29 @@ const (
 	handshakeTimeout       = 60 * time.Second
 	maxTokenUsageBodySize  = 8 << 20
 	upstreamReloadCooldown = 10 * time.Second
+	proxyInstanceIDBytes   = 16
+	verificationPath       = "/verification-document"
+	proxySoftwareName      = "tinfoil-proxy"
 )
 
 type readyMessage struct {
-	Event   string `json:"event"`
-	Enclave string `json:"enclave"`
-	Repo    string `json:"repo"`
-	Listen  string `json:"listen"`
+	Event                string                     `json:"event"`
+	InstanceID           string                     `json:"instance_id"`
+	Enclave              string                     `json:"enclave"`
+	Repo                 string                     `json:"repo"`
+	Listen               string                     `json:"listen"`
+	VerificationDocument *proxyVerificationDocument `json:"verification_document"`
+}
+
+type proxyRuntime struct {
+	InstanceID string                          `json:"instanceId"`
+	Listener   string                          `json:"listener"`
+	Software   verifierclient.SoftwareIdentity `json:"software"`
+}
+
+type proxyVerificationDocument struct {
+	*verifierclient.VerificationDocument
+	Runtime proxyRuntime `json:"runtime"`
 }
 
 type tokenStatsMessage struct {
@@ -46,6 +66,7 @@ type tokenStatsMessage struct {
 type tokenStatsEmitter func(tokenStatsMessage) error
 
 var stdoutMu sync.Mutex
+var buildVersion = "unknown"
 
 func emitJSONLine(msg any) error {
 	payload, err := json.Marshal(msg)
@@ -60,12 +81,14 @@ func emitJSONLine(msg any) error {
 	return nil
 }
 
-func emitReady(enclave, repo, listen string) error {
+func emitReady(instanceID, enclave, repo, listen string, document *proxyVerificationDocument) error {
 	msg := readyMessage{
-		Event:   "ready",
-		Enclave: enclave,
-		Repo:    repo,
-		Listen:  listen,
+		Event:                "ready",
+		InstanceID:           instanceID,
+		Enclave:              enclave,
+		Repo:                 repo,
+		Listen:               listen,
+		VerificationDocument: document,
 	}
 	return emitJSONLine(msg)
 }
@@ -132,19 +155,38 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	proxy := newReverseProxy(reloading, cacheSecret, tokens)
 
 	addr := bindAddress()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		proxy.ServeHTTP(w, r)
-	})
-
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.WithError(err).Error("failed to bind listener")
 		return err
 	}
+	listenAddr := listener.Addr().String()
+	instanceID, err := newProxyInstanceID()
+	if err != nil {
+		listener.Close()
+		return err
+	}
+	runtime := proxyRuntime{
+		InstanceID: instanceID,
+		Listener:   listenAddr,
+		Software: verifierclient.SoftwareIdentity{
+			Name:    proxySoftwareName,
+			Version: proxyVersion(),
+		},
+	}
+	mux := http.NewServeMux()
+	mux.Handle(verificationPath, verificationDocumentHandler(reloading, runtime))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		proxy.ServeHTTP(w, r)
+	})
 
 	if handshake {
-		if err := emitReady(enclaveHost, repo, addr); err != nil {
+		document, ok := currentVerificationDocument(reloading, runtime)
+		if !ok {
+			listener.Close()
+			return errors.New("verification document unavailable after successful verification")
+		}
+		if err := emitReady(instanceID, enclaveHost, repo, listenAddr, document); err != nil {
 			listener.Close()
 			return err
 		}
@@ -155,17 +197,26 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	log.WithFields(log.Fields{
-		"address":      addr,
+		"address":      listenAddr,
 		"enclave_host": enclaveHost,
 	}).Info("starting HTTP proxy server")
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           localOnlyGuard(addr, mux),
+		Handler:           localOnlyGuard(listenerGuardAddress(addr, listenAddr), mux),
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	return server.Serve(listener)
+}
+
+func listenerGuardAddress(configuredAddr, listenAddr string) string {
+	host, _, configuredErr := net.SplitHostPort(configuredAddr)
+	_, port, listenErr := net.SplitHostPort(listenAddr)
+	if configuredErr != nil || listenErr != nil {
+		return listenAddr
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // newReverseProxy assembles the forwarding pipeline. The logging transport
@@ -194,9 +245,10 @@ func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *t
 }
 
 type upstream struct {
-	host      string
-	repo      string
-	transport http.RoundTripper
+	host                 string
+	repo                 string
+	transport            http.RoundTripper
+	verificationDocument func() *verifierclient.VerificationDocument
 }
 
 // buildUpstream verifies and pins a router. When no enclave host is pinned via
@@ -214,10 +266,64 @@ func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
 		return nil, err
 	}
 	return &upstream{
-		host:      tinfoilClient.Enclave(),
-		repo:      tinfoilClient.Repo(),
-		transport: tinfoilClient.HTTPClient().Transport,
+		host:                 tinfoilClient.Enclave(),
+		repo:                 tinfoilClient.Repo(),
+		transport:            tinfoilClient.HTTPClient().Transport,
+		verificationDocument: tinfoilClient.VerificationDocument,
 	}, nil
+}
+
+func newProxyInstanceID() (string, error) {
+	id := make([]byte, proxyInstanceIDBytes)
+	if _, err := rand.Read(id); err != nil {
+		return "", fmt.Errorf("generate proxy instance ID: %w", err)
+	}
+	return hex.EncodeToString(id), nil
+}
+
+func proxyVersion() string {
+	if buildVersion != "unknown" {
+		return strings.TrimPrefix(buildVersion, "v")
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	return "devel"
+}
+
+func verificationDocumentHandler(reloading *reloadingUpstream, runtime proxyRuntime) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		document, ok := currentVerificationDocument(reloading, runtime)
+		if !ok {
+			http.Error(w, "verification document unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(document); err != nil {
+			log.WithError(err).Warn("failed to write verification document")
+		}
+	})
+}
+
+func currentVerificationDocument(reloading *reloadingUpstream, runtime proxyRuntime) (*proxyVerificationDocument, bool) {
+	current := reloading.get()
+	if current.verificationDocument == nil {
+		return nil, false
+	}
+	document := current.verificationDocument()
+	if document == nil {
+		return nil, false
+	}
+	return &proxyVerificationDocument{
+		VerificationDocument: document,
+		Runtime:              runtime,
+	}, true
 }
 
 var errReloadCoolingDown = errors.New("upstream reload attempted too recently")
