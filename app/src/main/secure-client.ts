@@ -1,21 +1,26 @@
-import { SecureClient, type VerificationDocument } from 'tinfoil'
+import {
+  AttestationError,
+  FetchError,
+  Verifier,
+  type VerificationDocument
+} from '@tinfoilsh/verifier'
 
-import { REVERIFY_INTERVAL_MS } from './constants.js'
+import { REVERIFY_INTERVAL_MS, ROUTER_VERIFY_RETRY_DELAY_MS } from './constants.js'
 import { fetchRouters } from './routers.js'
 import { stateStore, type RouterState, type VerificationStatus } from './state.js'
 
 interface ClientEntry {
   router: string
-  client: SecureClient
   status: VerificationStatus
   document?: VerificationDocument
   lastError?: string
+  verification?: Promise<void>
 }
 
 const clients = new Map<string, ClientEntry>()
 let reverifyTimer: NodeJS.Timeout | undefined
 let reverifyInFlight = false
-let roundRobinCursor = 0
+const DEFAULT_CONFIG_REPO = 'tinfoilsh/confidential-model-router'
 
 function describeError(err: unknown): string {
   if (err instanceof Error) return err.message
@@ -85,6 +90,33 @@ function applyEntryFromDoc(entry: ClientEntry, doc: VerificationDocument): void 
   updateGlobalStatus()
 }
 
+async function verifyEntry(entry: ClientEntry): Promise<void> {
+  if (entry.verification) return entry.verification
+  entry.verification = (async () => {
+    const verify = async (): Promise<VerificationDocument> => {
+      const verifier = new Verifier({
+        serverURL: `https://${entry.router}`,
+        configRepo: DEFAULT_CONFIG_REPO
+      })
+      await verifier.verify()
+      const document = verifier.getVerificationDocument()
+      if (!document) throw new Error('Verifier returned no verification document')
+      return document
+    }
+
+    try {
+      applyEntryFromDoc(entry, await verify())
+    } catch (err) {
+      if (!(err instanceof FetchError || err instanceof AttestationError)) throw err
+      await new Promise((resolve) => setTimeout(resolve, ROUTER_VERIFY_RETRY_DELAY_MS))
+      applyEntryFromDoc(entry, await verify())
+    }
+  })().finally(() => {
+    entry.verification = undefined
+  })
+  return entry.verification
+}
+
 export async function activateRouters(routers: string[]): Promise<void> {
   for (const host of Array.from(clients.keys())) {
     if (!routers.includes(host)) {
@@ -96,10 +128,6 @@ export async function activateRouters(routers: string[]): Promise<void> {
     if (!clients.has(router)) {
       const entry: ClientEntry = {
         router,
-        client: new SecureClient({
-          enclaveURL: `https://${router}`,
-          transport: 'tls'
-        }),
         status: 'initializing'
       }
       clients.set(router, entry)
@@ -115,8 +143,7 @@ export async function activateRouters(routers: string[]): Promise<void> {
       entry.status = 'initializing'
       entry.lastError = undefined
       try {
-        await entry.client.ready()
-        applyEntryFromDoc(entry, entry.client.getVerificationDocument())
+        await verifyEntry(entry)
       } catch (err) {
         entry.status = 'failed'
         entry.lastError = describeError(err)
@@ -144,9 +171,7 @@ async function reverifyAll(): Promise<void> {
   await Promise.all(
     Array.from(clients.values()).map(async (entry) => {
       try {
-        entry.client.reset()
-        await entry.client.ready()
-        applyEntryFromDoc(entry, entry.client.getVerificationDocument())
+        await verifyEntry(entry)
       } catch (err) {
         entry.status = 'failed'
         entry.lastError = describeError(err)
@@ -155,35 +180,6 @@ async function reverifyAll(): Promise<void> {
       }
     })
   )
-}
-
-export function getClient(router: string): SecureClient | undefined {
-  return clients.get(router)?.client
-}
-
-export function getEntry(router: string): { status: VerificationStatus; document?: VerificationDocument } | undefined {
-  const e = clients.get(router)
-  return e ? { status: e.status, document: e.document } : undefined
-}
-
-export function knownRouters(): string[] {
-  return Array.from(clients.keys())
-}
-
-export function verifiedRouters(): string[] {
-  return Array.from(clients.values())
-    .filter((e) => e.status === 'verified')
-    .map((e) => e.router)
-}
-
-export function pickRoundRobinRouter(): string | undefined {
-  const verified = verifiedRouters()
-  if (verified.length === 0) {
-    const any = knownRouters()
-    return any[roundRobinCursor++ % Math.max(any.length, 1)]
-  }
-  const pick = verified[roundRobinCursor++ % verified.length]
-  return pick
 }
 
 export function disposeSecureClients(): void {
@@ -201,21 +197,5 @@ export async function refreshRouters(): Promise<void> {
     await activateRouters(routers)
   } catch (err) {
     stateStore.set({ lastError: `Could not fetch routers: ${describeError(err)}` })
-  }
-}
-
-export async function verifyEnclave(
-  host: string
-): Promise<{ verified: boolean; document?: VerificationDocument; error?: string }> {
-  try {
-    const client = new SecureClient({
-      enclaveURL: `https://${host}`,
-      transport: 'tls'
-    })
-    await client.ready()
-    const document = client.getVerificationDocument()
-    return { verified: !!document.securityVerified, document }
-  } catch (err) {
-    return { verified: false, error: describeError(err) }
   }
 }
