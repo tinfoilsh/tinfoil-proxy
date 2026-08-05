@@ -323,7 +323,13 @@ export async function startProxy(port: number): Promise<{ port: number; endpoint
     const message = portInUse
       ? `Port ${port} is already in use. Stop the other process or choose a different port.`
       : `Tinfoil proxy exited unexpectedly (${signal ?? `code ${code ?? 0}`})`
-    setProxyState({ running: false, verifying: false, verified: false, lastError: message })
+    const existingError = stateStore.get().proxy.lastError
+    setProxyState({
+      running: false,
+      verifying: false,
+      verified: false,
+      lastError: existingError ?? message
+    })
   })
 
   proc.on('error', (err) => {
