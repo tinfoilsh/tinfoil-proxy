@@ -78,9 +78,9 @@ jobs:
         run: npm run ${{ matrix.package_script }} -- --publish always
 
   cli-binaries:
-    name: Cross-compile standalone CLI
+    name: Build standalone CLI
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
@@ -95,9 +95,51 @@ jobs:
           go-version: 'stable'
           cache: false
 
-      - name: Build per-platform binaries
+      - name: Build, sign, and notarize binaries
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          umask 077
+          KEYCHAIN_PASSWORD_BYTES=32
+          KEYCHAIN_TIMEOUT_SECONDS=21600
+          CERTIFICATE_PATH="${RUNNER_TEMP}/developer-id-application.p12"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/cli-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 "$KEYCHAIN_PASSWORD_BYTES")"
+          NOTARIZATION_DIR="${RUNNER_TEMP}/cli-notarization"
+          NOTARIZATION_ARCHIVE="${RUNNER_TEMP}/cli-notarization.zip"
+
+          cleanup() {
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            rm -rf "$CERTIFICATE_PATH" "$NOTARIZATION_DIR" "$NOTARIZATION_ARCHIVE"
+          }
+          trap cleanup EXIT
+
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut "$KEYCHAIN_TIMEOUT_SECONDS" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_P12_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
+              sed -nE 's/^[[:space:]]*[0-9]+\) ([0-9A-F]+) "Developer ID Application:.*$/\1/p' |
+              sed -n '1p'
+          )"
+          test -n "$SIGNING_IDENTITY"
+
           mkdir -p release-bin
           for target in \
               "darwin amd64 tinfoil-proxy-darwin-amd64" \
@@ -105,17 +147,42 @@ jobs:
               "linux amd64 tinfoil-proxy-linux-amd64" \
               "linux arm64 tinfoil-proxy-linux-arm64" \
               "windows amd64 tinfoil-proxy-windows-amd64.exe"; do
-            set -- $target
-            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" \
-              go build -trimpath -ldflags="-s -w -X main.buildVersion=${GITHUB_REF_NAME}" -o "release-bin/$3" .
+            read -r goos goarch output_name <<< "$target"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags="-s -w -X main.buildVersion=${GITHUB_REF_NAME}" -o "release-bin/$output_name" .
           done
+
+          for binary in release-bin/tinfoil-proxy-darwin-*; do
+            codesign \
+              --force \
+              --keychain "$KEYCHAIN_PATH" \
+              --options runtime \
+              --timestamp \
+              --sign "$SIGNING_IDENTITY" \
+              "$binary"
+            codesign --verify --strict --verbose=2 "$binary"
+          done
+
+          mkdir -p "$NOTARIZATION_DIR"
+          cp release-bin/tinfoil-proxy-darwin-* "$NOTARIZATION_DIR/"
+          ditto -c -k --keepParent "$NOTARIZATION_DIR" "$NOTARIZATION_ARCHIVE"
+          xcrun notarytool submit "$NOTARIZATION_ARCHIVE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          for binary in release-bin/tinfoil-proxy-darwin-*; do
+            codesign --verify --strict --check-notarization --verbose=2 "$binary"
+          done
+
           ls -la release-bin
 
       - name: Generate checksums
         run: |
           set -euo pipefail
           cd release-bin
-          sha256sum tinfoil-proxy-* > SHA256SUMS
+          shasum -a 256 tinfoil-proxy-* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Upload to release
