@@ -14,7 +14,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -239,6 +239,45 @@ jobs:
 
           ls -la release-bin
 
+      - name: Restore existing recovery assets
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          EXISTING_ASSETS="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+
+          asset_exists() {
+            local candidate="$1"
+            while IFS= read -r existing_asset; do
+              if [ "$candidate" = "$existing_asset" ]; then
+                return 0
+              fi
+            done <<< "$EXISTING_ASSETS"
+            return 1
+          }
+
+          missing_binary=false
+          for asset in release-bin/tinfoil-proxy-*; do
+            if ! asset_exists "${asset##*/}"; then
+              missing_binary=true
+            fi
+          done
+
+          if asset_exists SHA256SUMS && [ "$missing_binary" = "true" ]; then
+            echo "The existing checksum manifest references an incomplete release."
+            exit 1
+          fi
+
+          for asset in release-bin/tinfoil-proxy-*; do
+            asset_name="${asset##*/}"
+            if asset_exists "$asset_name"; then
+              rm "$asset"
+              gh release download "$TAG" --pattern "$asset_name" --dir release-bin
+            fi
+          done
+
       - name: Generate checksums
         run: |
           set -euo pipefail
@@ -261,17 +300,40 @@ jobs:
           fi
 
           EXISTING_ASSETS="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          for asset in release-bin/*; do
+          UPLOAD_BINARIES=()
+          for asset in release-bin/tinfoil-proxy-*; do
             asset_name="${asset##*/}"
             while IFS= read -r existing_asset; do
               if [ "$asset_name" = "$existing_asset" ]; then
+                if [ "$RECOVERY_MODE" = "true" ]; then
+                  echo "Release asset already exists; leaving it unchanged: $asset_name"
+                  continue 2
+                fi
                 echo "Release asset already exists: $asset_name"
                 exit 1
               fi
             done <<< "$EXISTING_ASSETS"
+            UPLOAD_BINARIES+=("$asset")
           done
 
-          gh release upload "$TAG" release-bin/*
+          upload_checksums=true
+          while IFS= read -r existing_asset; do
+            if [ "$existing_asset" = "SHA256SUMS" ]; then
+              if [ "$RECOVERY_MODE" != "true" ]; then
+                echo "Release asset already exists: SHA256SUMS"
+                exit 1
+              fi
+              echo "Release asset already exists; leaving it unchanged: SHA256SUMS"
+              upload_checksums=false
+            fi
+          done <<< "$EXISTING_ASSETS"
+
+          if ((${#UPLOAD_BINARIES[@]} > 0)); then
+            gh release upload "$TAG" "${UPLOAD_BINARIES[@]}"
+          fi
+          if [ "$upload_checksums" = "true" ]; then
+            gh release upload "$TAG" release-bin/SHA256SUMS
+          fi
 
   docker:
     name: Build & push Docker image
