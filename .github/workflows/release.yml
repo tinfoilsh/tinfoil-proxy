@@ -13,11 +13,52 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  verify_release:
+    name: Verify release target
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0 # zizmor: ignore[cache-poisoning]
+        with:
+          node-version: '20'
+
+      - name: Verify tag and version
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          test "$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")" = "$(git rev-parse HEAD)"
+          VERSION="$(node -p "require('./app/package.json').version")"
+          test "v${VERSION}" = "$RELEASE_TAG"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
   build:
     name: Build & publish (${{ matrix.os }})
+    needs: verify_release
     if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    environment: release
     permissions:
       contents: write
     strategy:
@@ -43,7 +84,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: 'stable'
+          go-version-file: go.mod
           cache: false
 
       - name: Set up Node.js
@@ -86,12 +127,17 @@ jobs:
 
   cli-binaries:
     name: Build standalone CLI
-    needs: build
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.build.result == 'success') }}
+    needs:
+      - verify_release
+      - build
+    if: ${{ always() && needs.verify_release.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.build.result == 'success') }}
     runs-on: macos-latest
+    timeout-minutes: 60
+    environment: release
     permissions:
       contents: write
     env:
+      RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
@@ -103,7 +149,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: 'stable'
+          go-version-file: go.mod
           cache: false
 
       - name: Build, sign, and notarize binaries
@@ -117,7 +163,7 @@ jobs:
           set -euo pipefail
           umask 077
           KEYCHAIN_PASSWORD_BYTES=32
-          KEYCHAIN_TIMEOUT_SECONDS=21600
+          KEYCHAIN_TIMEOUT_SECONDS=600
           CERTIFICATE_PATH="${RUNNER_TEMP}/developer-id-application.p12"
           KEYCHAIN_PATH="${RUNNER_TEMP}/cli-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 "$KEYCHAIN_PASSWORD_BYTES")"
@@ -138,6 +184,7 @@ jobs:
             -k "$KEYCHAIN_PATH" \
             -P "$APPLE_CERTIFICATE_P12_PASSWORD" \
             -T /usr/bin/codesign
+          rm -f "$CERTIFICATE_PATH"
           security set-key-partition-list \
             -S apple-tool:,apple: \
             -s \
@@ -164,6 +211,7 @@ jobs:
               go build -trimpath -ldflags="-s -w -X main.buildVersion=${RELEASE_TAG}" -o "release-bin/$output_name" .
           done
 
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           for binary in release-bin/tinfoil-proxy-darwin-*; do
             codesign \
               --force \
@@ -174,6 +222,7 @@ jobs:
               "$binary"
             codesign --verify --strict --verbose=2 "$binary"
           done
+          security lock-keychain "$KEYCHAIN_PATH"
 
           mkdir -p "$NOTARIZATION_DIR"
           cp release-bin/tinfoil-proxy-darwin-* "$NOTARIZATION_DIR/"
@@ -202,14 +251,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag || true
-          gh release upload "$TAG" release-bin/* --clobber
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$RECOVERY_MODE" = "true" ]; then
+              echo "Release $TAG does not exist; recovery runs cannot create releases."
+              exit 1
+            fi
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          fi
+
+          EXISTING_ASSETS="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for asset in release-bin/*; do
+            asset_name="${asset##*/}"
+            while IFS= read -r existing_asset; do
+              if [ "$asset_name" = "$existing_asset" ]; then
+                echo "Release asset already exists: $asset_name"
+                exit 1
+              fi
+            done <<< "$EXISTING_ASSETS"
+          done
+
+          gh release upload "$TAG" release-bin/*
 
   docker:
     name: Build & push Docker image
-    needs: build
-    if: github.event_name == 'push'
+    needs:
+      - verify_release
+      - build
+    if: ${{ github.event_name == 'push' && needs.verify_release.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
     permissions:
       contents: read
       packages: write
