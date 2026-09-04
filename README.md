@@ -1,6 +1,6 @@
 # Tinfoil Proxy
 
-A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, verifies the upstream enclave against the public attestation transparency log, pins the attested public key, and forwards your traffic. Point any OpenAI-compatible tool at the local URL and every request runs over a verified connection.
+A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, verifies the upstream enclave against the public attestation transparency log, and encrypts every request and response body end-to-end to the attested key using the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol), so only the verified enclave can read them. Point any OpenAI-compatible tool at the local URL and every request runs over a verified connection.
 
 [![Documentation](https://img.shields.io/badge/docs-tinfoil.sh-blue)](https://docs.tinfoil.sh/local-proxy/cli)
 
@@ -64,7 +64,7 @@ Or grab a pre-built binary from the [releases page](https://github.com/tinfoilsh
 tinfoil-proxy
 ```
 
-It listens on `http://127.0.0.1:3301`, auto-selects a Tinfoil router enclave, verifies its attestation, and pins the attested key for the rest of the session (re-verifying if the enclave rotates its certificate). Point any OpenAI-compatible client at:
+It listens on `http://127.0.0.1:3301`, auto-selects a Tinfoil router enclave, verifies its attestation, and pins the attested key for the rest of the session (re-verifying if the enclave rotates its key). Point any OpenAI-compatible client at:
 
 ```text
 Base URL: http://127.0.0.1:3301/v1
