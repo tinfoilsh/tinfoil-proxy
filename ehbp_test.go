@@ -213,12 +213,13 @@ func TestEHBPProxyInjectsCacheSecretInsideEncryptedBody(t *testing.T) {
 	}
 }
 
-// TestProxiedRequestsReachTheSealingTransportReplayable pins the contract the
-// SDK's EHBP transport depends on: after an HPKE key rotation it re-verifies
-// and retries once, but only if the request body can be re-read. The proxy
-// receives bodies without GetBody from the server, so every layer above the
-// sealing transport must hand down a replayable body.
-func TestProxiedRequestsReachTheSealingTransportReplayable(t *testing.T) {
+// TestProxyHandsSealingTransportReplayableBodies checks the proxy's side of
+// the contract the SDK's EHBP transport depends on: that transport retries
+// once after an HPKE key rotation only if the request body can be re-read via
+// GetBody. The retry itself is the SDK's and is tested there; this test
+// verifies that every proxy layer above the sealing transport hands down a
+// replayable body, since inbound server requests never carry GetBody.
+func TestProxyHandsSealingTransportReplayableBodies(t *testing.T) {
 	cases := []struct {
 		name        string
 		cacheSecret string
