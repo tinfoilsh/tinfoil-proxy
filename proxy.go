@@ -276,10 +276,14 @@ type upstream struct {
 // buildUpstream verifies and pins a router. When no enclave host is pinned via
 // flags, the SDK reselects a healthy router from the router service, which is
 // what lets the proxy recover when the current router rotates or goes down.
+//
+// Request and response bodies are sealed end-to-end to the attested HPKE key.
+// The SDK transport decrypts responses and drops the Content-Length that
+// described the encrypted bytes, so the reverse proxy forwards accurate
+// framing. It also retries once after an HPKE key rotation, which relies on
+// request bodies being replayable (see setReplayableBody).
 func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
-	// TLS pinning keeps response bodies unencrypted at the HTTP layer, so the
-	// reverse proxy forwards accurate framing headers.
-	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportTLS)}
+	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportEHBP)}
 	if requestedEnclave != "" || requestedRepo != "" {
 		opts = append(opts, tinfoil.WithEnclave(requestedEnclave), tinfoil.WithRepo(requestedRepo))
 	}
@@ -746,11 +750,8 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 }
 
 func setRequestBody(req *http.Request, body []byte) {
-	req.Body = io.NopCloser(bytes.NewReader(body))
+	setReplayableBody(req, body)
 	req.ContentLength = int64(len(body))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
 }
 
 type tokenCounter struct {

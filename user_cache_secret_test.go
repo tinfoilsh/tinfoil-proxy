@@ -223,6 +223,15 @@ func postJSONRequest(t *testing.T, url, body string) *http.Request {
 	return req
 }
 
+// inboundJSONRequest mimics a request handed to a server handler: unlike
+// http.NewRequest, the server never populates GetBody.
+func inboundJSONRequest(t *testing.T, url, body string) *http.Request {
+	t.Helper()
+	req := postJSONRequest(t, url, body)
+	req.GetBody = nil
+	return req
+}
+
 func TestUserCacheSecretTransportInjects(t *testing.T) {
 	paths := []string{
 		"/v1/chat/completions",
@@ -345,6 +354,43 @@ func TestUserCacheSecretTransportNeverClobbers(t *testing.T) {
 			}
 			if string(capture.body) != tc.raw {
 				t.Fatalf("a body that already carries the field must pass through byte-identical, got %q", capture.body)
+			}
+		})
+	}
+}
+
+func TestUserCacheSecretTransportUnchangedBodiesStayReplayable(t *testing.T) {
+	// Inbound server requests never carry GetBody. Once this layer has
+	// buffered the body it must expose it for replay even when it forwards
+	// the bytes untouched: the SDK's EHBP transport retries a request once
+	// after an HPKE key rotation only if the body can be re-read.
+	for _, raw := range []string{
+		`{"model":"m","user_cache_secret":"caller"}`,
+		`[1,2,3]`,
+		`not json`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			capture := &captureRoundTripper{}
+			transport := &userCacheSecretTransport{secret: "proxy-level", transport: capture}
+			if _, err := transport.RoundTrip(inboundJSONRequest(t, "https://enclave.example.com/v1/chat/completions", raw)); err != nil {
+				t.Fatal(err)
+			}
+			if string(capture.body) != raw {
+				t.Fatalf("expected the body to pass through byte-identical, got %q", capture.body)
+			}
+			if capture.req.GetBody == nil {
+				t.Fatal("expected an unchanged buffered body to be replayable")
+			}
+			replay, err := capture.req.GetBody()
+			if err != nil {
+				t.Fatal(err)
+			}
+			replayed, err := io.ReadAll(replay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(replayed) != raw {
+				t.Fatalf("expected the replayed body to match the original, got %q", replayed)
 			}
 		})
 	}
