@@ -746,11 +746,8 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 }
 
 func setRequestBody(req *http.Request, body []byte) {
-	req.Body = io.NopCloser(bytes.NewReader(body))
+	setReplayableBody(req, body)
 	req.ContentLength = int64(len(body))
-	req.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
 }
 
 type tokenCounter struct {

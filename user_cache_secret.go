@@ -216,20 +216,26 @@ func (t *userCacheSecretTransport) RoundTrip(req *http.Request) (*http.Response,
 	out := req.Clone(req.Context())
 	if !changed {
 		// Not a JSON object, or the client supplied a caller-owned value:
-		// forward the original bytes untouched.
-		out.Body = io.NopCloser(bytes.NewReader(raw))
+		// forward the original bytes untouched. The body is already buffered,
+		// so expose it for replay: inbound server requests never carry
+		// GetBody, and without it the layers below cannot retry.
+		setReplayableBody(out, raw)
 		return t.transport.RoundTrip(out)
 	}
 
-	out.Body = io.NopCloser(bytes.NewReader(newBody))
-	out.ContentLength = int64(len(newBody))
-	out.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
 	// Retries below this layer (router reselection, EHBP key rotation) must
 	// replay the injected body, not the client's original.
-	out.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(newBody)), nil
-	}
+	setReplayableBody(out, newBody)
+	out.ContentLength = int64(len(newBody))
+	out.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
 	return t.transport.RoundTrip(out)
+}
+
+func setReplayableBody(req *http.Request, body []byte) {
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
 }
 
 // readCloser pairs a stitched-together reader with the closer of the
