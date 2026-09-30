@@ -1,19 +1,16 @@
 import { app } from 'electron'
 
 import { loadConfig } from './config.js'
-import { ROUTERS_REFRESH_INTERVAL_MS } from './constants.js'
 import { registerIpc } from './ipc.js'
 import { applyLaunchAtLogin } from './login-item.js'
 import { createTray, getTrayBounds } from './menu.js'
 import { showDetailsWindow, showPopupIfReady } from './popup.js'
 import { startProxy, stopProxy } from './proxy.js'
-import { disposeSecureClients, refreshRouters } from './secure-client.js'
 import { stateStore } from './state.js'
 import { startAutoUpdater, stopAutoUpdater } from './updater.js'
 
 app.commandLine.appendSwitch('password-store', 'basic')
 
-let routersTimer: NodeJS.Timeout | undefined
 let cleanupCompleted = false
 
 if (process.platform === 'darwin') {
@@ -43,13 +40,11 @@ async function bootstrap(): Promise<void> {
     proxy: {
       enabled: cfg.proxyEnabled,
       running: false,
-      verifying: false,
-      verified: false,
       port: cfg.port,
       allowedHosts: cfg.allowedHosts,
       upstreamedTokens: 0,
       downstreamedTokens: 0,
-      enclave: undefined,
+      gateway: undefined,
       lastError: undefined
     },
     launchAtLogin: cfg.launchAtLogin
@@ -61,22 +56,17 @@ async function bootstrap(): Promise<void> {
     await startProxy(cfg.port, cfg.allowedHosts)
   }
 
-  void refreshRouters()
-
-  routersTimer = setInterval(() => {
-    void refreshRouters()
-  }, ROUTERS_REFRESH_INTERVAL_MS)
-
   startAutoUpdater()
 }
 
 app.whenReady().then(() => {
   bootstrap().catch((err) => {
     console.error('Tray bootstrap failed:', err)
+    const message = err instanceof Error ? err.message : String(err)
+    const { proxy } = stateStore.get()
     stateStore.set({
-      status: 'failed',
-      statusMessage: 'Startup failed',
-      lastError: err instanceof Error ? err.message : String(err)
+      proxy: proxy.running ? proxy : { ...proxy, lastError: message },
+      lastError: message
     })
   })
 })
@@ -90,9 +80,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   void (async () => {
     try {
-      if (routersTimer) clearInterval(routersTimer)
       stopAutoUpdater()
-      disposeSecureClients()
       await stopProxy()
     } catch (err) {
       console.error('cleanup failed during quit:', err)

@@ -5,8 +5,10 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tinfoilsh/tinfoil-go"
 )
 
 var loopbackBinds = map[string]bool{
@@ -18,15 +20,17 @@ var loopbackBinds = map[string]bool{
 const (
 	defaultListenPort uint   = 3301
 	defaultListenAddr string = "127.0.0.1"
+	defaultGatewayURL string = "https://inference-gateway.tinfoil.sh"
 )
 
 var (
-	enclaveHost      string
-	repo             string
+	gatewayURL       string
 	listenPort       uint
 	listenAddr       string
 	logFormat        string
 	userCacheSecret  string
+	modelPins        []string
+	pinnedOnly       bool
 	verbose          bool
 	trace            bool
 	handshake        bool
@@ -37,24 +41,45 @@ var deprecatedAllowedOrigins []string
 
 var rootCmd = &cobra.Command{
 	Use:   "tinfoil-proxy",
-	Short: "Run a local HTTP proxy to the verified Tinfoil enclave",
+	Short: "Run a local HTTP proxy to verified Tinfoil enclaves",
 	RunE:  runProxy,
 }
 
 func init() {
-	rootCmd.Flags().StringVarP(&enclaveHost, "host", "e", "", "Enclave hostname")
-	rootCmd.Flags().StringVarP(&repo, "repo", "r", "", "Enclave config repo")
+	rootCmd.Flags().StringVar(&gatewayURL, "gateway", defaultGatewayURL, "Tinfoil gateway URL")
+	rootCmd.Flags().StringArrayVar(&modelPins, "pin", nil, "Pin a model to MODEL=owner/name[@tag][@sha256:digest] (repeatable)")
+	rootCmd.Flags().BoolVar(&pinnedOnly, "pinned-only", false, "Serve only explicitly pinned models (requires --pin)")
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
 	rootCmd.Flags().StringSliceVar(&allowedHostnames, "allowed-host", nil, "Additional Host header hostname to allow (values without a port also match portless Host headers)")
 	rootCmd.Flags().StringSliceVar(&deprecatedAllowedOrigins, "allowed-origin", nil, "Deprecated; all Origin header values are allowed")
 	_ = rootCmd.Flags().MarkDeprecated("allowed-origin", "all Origin header values are allowed by default")
-	rootCmd.Flags().StringVar(&userCacheSecret, userCacheSecretFlag, "", "Prompt-cache scoping secret added to forwarded requests (empty is unset; default: generated and persisted)")
+	rootCmd.Flags().StringVar(&userCacheSecret, "user-cache-secret", "", "Prompt-cache scoping secret (empty is unset; default: generated and persisted)")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	rootCmd.Flags().BoolVarP(&trace, "trace", "t", false, "Trace output")
 	rootCmd.Flags().BoolVar(&handshake, "handshake", false, "Emit a ready line on stdout and wait for a go signal on stdin before serving (used by the Tinfoil Proxy app)")
 	_ = rootCmd.Flags().MarkHidden("handshake")
+}
+
+func gatewayOptions(pins []string, only bool, secret string) (tinfoil.GatewayOptions, error) {
+	opts := tinfoil.GatewayOptions{
+		ClientOptions:    []tinfoil.ClientOption{tinfoil.WithUserCacheSecret(secret)},
+		ModelPins:        make(map[string]tinfoil.ModelPin, len(pins)),
+		PinnedModelsOnly: only,
+	}
+	for _, value := range pins {
+		model, ref, found := strings.Cut(value, "=")
+		model, ref = strings.TrimSpace(model), strings.TrimSpace(ref)
+		if !found || model == "" || ref == "" {
+			return tinfoil.GatewayOptions{}, &tinfoil.ConfigurationError{Err: fmt.Errorf("invalid --pin %q: want MODEL=REF with non-empty model and reference", value)}
+		}
+		if _, exists := opts.ModelPins[model]; exists {
+			return tinfoil.GatewayOptions{}, &tinfoil.ConfigurationError{Err: fmt.Errorf("duplicate --pin for model %q", model)}
+		}
+		opts.ModelPins[model] = tinfoil.ModelPin{Repo: ref}
+	}
+	return opts, nil
 }
 
 func main() {
