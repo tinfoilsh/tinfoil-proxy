@@ -7,7 +7,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/tinfoilsh/encrypted-http-body-protocol v0.3.2
-	github.com/tinfoilsh/tinfoil-go v0.16.1-0.20260930004343-a4ef5c8808c1
+	github.com/tinfoilsh/tinfoil-go v0.16.1-0.20260930023622-46f9219a0e5d
 )
 
 require (
