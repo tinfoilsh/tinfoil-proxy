@@ -1,7 +1,7 @@
 {
   "name": "tinfoil-proxy",
   "productName": "Tinfoil Proxy",
-  "version": "0.3.0-rc.1",
+  "version": "0.3.0-rc.2",
   "private": true,
   "description": "Verified Tinfoil HTTP proxy and the menu-bar app that wraps it",
   "author": {
@@ -41,7 +41,7 @@
     "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.65.0",
     "electron": "^42.7.1",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "^26.16.1",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.5",
     "globals": "^14.0.0",
