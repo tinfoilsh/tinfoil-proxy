@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/tinfoilsh/tinfoil-go"
 )
 
@@ -48,7 +47,8 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Flags().StringVar(&gatewayURL, "gateway", defaultGatewayURL, "Tinfoil gateway URL")
-	addPinFlags(rootCmd.Flags(), &modelPins, &pinnedOnly)
+	rootCmd.Flags().StringArrayVar(&modelPins, "pin", nil, "Pin a model to MODEL=owner/name[@tag][@sha256:digest] (repeatable)")
+	rootCmd.Flags().BoolVar(&pinnedOnly, "pinned-only", false, "Serve only explicitly pinned models (requires --pin)")
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
@@ -62,11 +62,6 @@ func init() {
 	_ = rootCmd.Flags().MarkHidden("handshake")
 }
 
-func addPinFlags(flags *pflag.FlagSet, pins *[]string, only *bool) {
-	flags.StringArrayVar(pins, "pin", nil, "Pin a model to MODEL=owner/name[@tag][@sha256:digest] (repeatable)")
-	flags.BoolVar(only, "pinned-only", false, "Serve only explicitly pinned models (requires --pin)")
-}
-
 func gatewayOptions(pins []string, only bool, secret string) (tinfoil.GatewayOptions, error) {
 	opts := tinfoil.GatewayOptions{
 		ClientOptions:    []tinfoil.ClientOption{tinfoil.WithUserCacheSecret(secret)},
@@ -75,7 +70,8 @@ func gatewayOptions(pins []string, only bool, secret string) (tinfoil.GatewayOpt
 	}
 	for _, value := range pins {
 		model, ref, found := strings.Cut(value, "=")
-		if !found || strings.TrimSpace(model) == "" || strings.TrimSpace(ref) == "" {
+		model, ref = strings.TrimSpace(model), strings.TrimSpace(ref)
+		if !found || model == "" || ref == "" {
 			return tinfoil.GatewayOptions{}, &tinfoil.ConfigurationError{Err: fmt.Errorf("invalid --pin %q: want MODEL=REF with non-empty model and reference", value)}
 		}
 		if _, exists := opts.ModelPins[model]; exists {

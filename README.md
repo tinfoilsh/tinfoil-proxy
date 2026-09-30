@@ -8,7 +8,7 @@ A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. I
 
 The proxy and the desktop app are independent. Most people only need the proxy.
 
-- **The proxy (repo root)** — a tiny, self-contained Go program. Two source files (`main.go`, `proxy.go`), three direct dependencies, compiled to a single static binary with no runtime requirements. This is the whole proxy. It's all you need for scripts, CI, servers, and any OpenAI-compatible client.
+- **The proxy (repo root)** — a tiny, self-contained Go program. Two source files (`main.go`, `proxy.go`), four direct dependencies, compiled to a single static binary with no runtime requirements. This is the whole proxy. It's all you need for scripts, CI, servers, and any OpenAI-compatible client.
 - **The menu-bar app (`app/`)** — an *optional* Electron desktop wrapper that runs the exact same proxy binary with start/stop buttons and live verification status. Everything Electron, Node.js, and the build tooling lives under `app/`. If you don't want a desktop app, you can ignore that whole folder.
 
 > The Electron/Node.js footprint lives entirely in `app/`, **not** at the root. The proxy itself is lightweight: a single Go binary that does verification and forwarding, nothing more.
@@ -21,7 +21,7 @@ Both serve the same endpoint with the same attestation, because the app just lau
 .                      The proxy (lightweight Go binary) — the core
   main.go              CLI entrypoint, flags, bind handling
   proxy.go             attestation, reverse proxy, local-only guard
-  go.mod / go.sum      3 direct deps, builds with CGO disabled
+  go.mod / go.sum      4 direct deps, builds with CGO disabled
   Dockerfile           container image for the binary
   install.sh           downloads the released binary
 
@@ -197,11 +197,6 @@ See the [app guide](https://docs.tinfoil.sh/local-proxy/app) for the full walkth
 ### Proxy only (Go)
 
 Requires Go 1.27.1+. No Node.js needed.
-
-This development branch uses a local SDK replacement at `../tinfoil-go` for
-gateway pinning. Keep that sibling checkout when building or testing. Before
-release, publish the SDK change, update its required version in `go.mod`, and
-remove the local replacement so standalone and Docker builds can resolve it.
 
 ```sh
 go run .            # run the proxy locally

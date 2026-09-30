@@ -5,9 +5,8 @@ go 1.27.1
 require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
 	github.com/tinfoilsh/encrypted-http-body-protocol v0.3.2
-	github.com/tinfoilsh/tinfoil-go v0.16.1-0.20260930023622-46f9219a0e5d
+	github.com/tinfoilsh/tinfoil-go v0.16.1
 )
 
 require (
@@ -64,6 +63,7 @@ require (
 	github.com/sigstore/sigstore v1.10.8 // indirect
 	github.com/sigstore/sigstore-go v1.2.2 // indirect
 	github.com/sigstore/timestamp-authority/v2 v2.1.3 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/theupdateframework/go-tuf/v2 v2.4.2 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect

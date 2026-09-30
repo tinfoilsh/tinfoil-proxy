@@ -62,8 +62,11 @@ async function bootstrap(): Promise<void> {
 app.whenReady().then(() => {
   bootstrap().catch((err) => {
     console.error('Tray bootstrap failed:', err)
+    const message = err instanceof Error ? err.message : String(err)
+    const { proxy } = stateStore.get()
     stateStore.set({
-      lastError: err instanceof Error ? err.message : String(err)
+      proxy: proxy.running ? proxy : { ...proxy, lastError: message },
+      lastError: message
     })
   })
 })
