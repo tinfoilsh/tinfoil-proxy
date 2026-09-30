@@ -42,7 +42,7 @@ jobs:
       - name: Verify tag and version
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$ ]]; then
             echo "Invalid release tag: $RELEASE_TAG"
             exit 1
           fi
@@ -71,6 +71,8 @@ jobs:
             package_script: package:linux
           - os: windows-latest
             package_script: package:win
+    env:
+      EP_PRE_RELEASE: ${{ contains(github.ref_name, '-') }}
     defaults:
       run:
         shell: bash
@@ -375,9 +377,12 @@ jobs:
           VERSION="${TAG#v}"
           OWNER_LC="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
           IMAGE="ghcr.io/${OWNER_LC}/tinfoil-proxy"
+          TAGS=(--tag "${IMAGE}:${VERSION}")
+          if [[ "$TAG" != *-* ]]; then
+            TAGS+=(--tag "${IMAGE}:latest")
+          fi
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --build-arg VERSION="${TAG}" \
-            --tag "${IMAGE}:${VERSION}" \
-            --tag "${IMAGE}:latest" \
+            "${TAGS[@]}" \
             --push .
