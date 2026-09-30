@@ -4,25 +4,27 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/tinfoilsh/tinfoil-go"
-	verifierclient "github.com/tinfoilsh/tinfoil-go/verifier/client"
 )
 
 const (
@@ -31,35 +33,18 @@ const (
 	httpMaxHeaderBytes     = 1 << 20
 	handshakeTimeout       = 60 * time.Second
 	maxTokenUsageBodySize  = 8 << 20
-	upstreamReloadCooldown = 10 * time.Second
-	proxyInstanceIDBytes   = 16
-	verificationPath       = "/verification-document"
-	proxySoftwareName      = "tinfoil-proxy"
+	maxRequestBodySize     = 64 << 20
+	catalogRefreshInterval = time.Minute
+	modelsPath             = "/v1/models"
 )
 
+// The gateway is not attested, so it only receives the headers inference needs.
+var forwardedHeaders = []string{"Authorization", "Content-Type", "Accept"}
+
 type readyMessage struct {
-	Event                string                     `json:"event"`
-	InstanceID           string                     `json:"instance_id"`
-	Enclave              string                     `json:"enclave"`
-	Repo                 string                     `json:"repo"`
-	Listen               string                     `json:"listen"`
-	VerificationDocument *proxyVerificationDocument `json:"verification_document"`
-}
-
-type proxyRuntime struct {
-	InstanceID string                          `json:"instanceId"`
-	Listener   string                          `json:"listener"`
-	Software   verifierclient.SoftwareIdentity `json:"software"`
-}
-
-type proxyVerificationDocument struct {
-	*verifierclient.VerificationDocument
-	Runtime proxyRuntime `json:"runtime"`
-}
-
-type verificationMessage struct {
-	Event                string                     `json:"event"`
-	VerificationDocument *proxyVerificationDocument `json:"verification_document"`
+	Event   string `json:"event"`
+	Gateway string `json:"gateway"`
+	Listen  string `json:"listen"`
 }
 
 type tokenStatsMessage struct {
@@ -69,6 +54,11 @@ type tokenStatsMessage struct {
 }
 
 type tokenStatsEmitter func(tokenStatsMessage) error
+
+type attestationFailureMessage struct {
+	Event string `json:"event"`
+	Error string `json:"error"`
+}
 
 var stdoutMu sync.Mutex
 var buildVersion = "unknown"
@@ -86,27 +76,21 @@ func emitJSONLine(msg any) error {
 	return nil
 }
 
-func emitReady(instanceID, enclave, repo, listen string, document *proxyVerificationDocument) error {
+func emitReady(gateway, listen string) error {
 	msg := readyMessage{
-		Event:                "ready",
-		InstanceID:           instanceID,
-		Enclave:              enclave,
-		Repo:                 repo,
-		Listen:               listen,
-		VerificationDocument: document,
+		Event:   "ready",
+		Gateway: gateway,
+		Listen:  listen,
 	}
 	return emitJSONLine(msg)
 }
 
-func emitVerification(document *proxyVerificationDocument) error {
-	return emitJSONLine(verificationMessage{
-		Event:                "verification",
-		VerificationDocument: document,
-	})
-}
-
 func emitTokenStats(msg tokenStatsMessage) error {
 	return emitJSONLine(msg)
+}
+
+func emitAttestationFailure(err error) error {
+	return emitJSONLine(attestationFailureMessage{Event: "attestation-failed", Error: err.Error()})
 }
 
 func waitForGoSignal(timeout time.Duration) error {
@@ -139,32 +123,40 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	setupLogger()
 	warnIfNonLoopbackBind()
 
-	log.WithFields(log.Fields{
-		"enclave_host": enclaveHost,
-		"repo":         repo,
-	}).Info("initializing secure client")
+	log.WithField("gateway", gatewayURL).Info("initializing gateway client")
 
-	requestedEnclave, requestedRepo := enclaveHost, repo
-	initial, err := buildUpstream(requestedEnclave, requestedRepo)
+	opts, err := gatewayOptions(modelPins, pinnedOnly, userCacheSecret)
 	if err != nil {
-		log.WithError(err).Error("failed to create HTTP client")
 		return err
 	}
-	enclaveHost = initial.host
-	repo = initial.repo
-	log.Debug("secure HTTP client created successfully")
-
-	reloading := newReloadingUpstream(initial, func() (*upstream, error) {
-		return buildUpstream(requestedEnclave, requestedRepo)
-	})
+	var catalog atomic.Pointer[tinfoil.Catalog]
+	catalog.Store(&tinfoil.Catalog{})
+	gateway, err := tinfoil.NewGateway(gatewayURL,
+		func() tinfoil.Catalog { return *catalog.Load() },
+		opts,
+	)
+	if err != nil {
+		log.WithError(err).Error("failed to create gateway client")
+		return err
+	}
+	// NewGateway only accepts an absolute HTTPS URL.
+	base, _ := url.Parse(gatewayURL)
+	initial, err := tinfoil.FetchCatalog(base.Host)
+	if err != nil {
+		log.WithError(err).Error("failed to fetch gateway catalog")
+		return err
+	}
+	catalog.Store(&initial)
+	go refreshCatalog(base.Host, &catalog)
 
 	var tokens *tokenCounter
+	var reportAttestationFailure func(error) error
 	if handshake {
 		tokens = newTokenCounter(emitTokenStats)
+		reportAttestationFailure = emitAttestationFailure
 	}
 
-	cacheSecret := resolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
-	proxy := newReverseProxy(reloading, cacheSecret, tokens)
+	proxy := newReverseProxy(gateway.HTTPClient().Transport, base.Host, tokens, reportAttestationFailure)
 
 	addr := bindAddress()
 	listener, err := net.Listen("tcp", addr)
@@ -173,42 +165,16 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	listenAddr := listener.Addr().String()
-	instanceID, err := newProxyInstanceID()
-	if err != nil {
-		listener.Close()
-		return err
-	}
-	runtime := proxyRuntime{
-		InstanceID: instanceID,
-		Listener:   listenAddr,
-		Software: verifierclient.SoftwareIdentity{
-			Name:    proxySoftwareName,
-			Version: proxyVersion(),
-		},
-	}
-	if handshake {
-		reloading.onVerificationChange = func(document *verifierclient.VerificationDocument) {
-			if err := emitVerification(&proxyVerificationDocument{
-				VerificationDocument: document,
-				Runtime:              runtime,
-			}); err != nil {
-				log.WithError(err).Warn("failed to emit updated verification document")
-			}
-		}
-	}
 	mux := http.NewServeMux()
-	mux.Handle(verificationPath, verificationDocumentHandler(reloading, runtime))
+	mux.Handle("GET "+modelsPath, modelsHandler(&catalog, gateway))
+	mux.Handle("GET /verifications", verificationsHandler(gateway))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		proxy.ServeHTTP(w, r)
 	})
 
 	if handshake {
-		document, ok := currentVerificationDocument(reloading, runtime)
-		if !ok {
-			listener.Close()
-			return errors.New("verification document unavailable after successful verification")
-		}
-		if err := emitReady(instanceID, enclaveHost, repo, listenAddr, document); err != nil {
+		if err := emitReady(base.Host, listenAddr); err != nil {
 			listener.Close()
 			return err
 		}
@@ -219,8 +185,9 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	log.WithFields(log.Fields{
-		"address":      listenAddr,
-		"enclave_host": enclaveHost,
+		"address": listenAddr,
+		"gateway": base.Host,
+		"version": proxyVersion(),
 	}).Info("starting HTTP proxy server")
 	server := &http.Server{
 		Addr:              addr,
@@ -232,6 +199,21 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	return server.Serve(listener)
 }
 
+func verificationsHandler(gateway *tinfoil.Gateway) http.Handler {
+	instanceID := rand.Text()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"version": 1, "instance_id": instanceID, "snapshot_at": time.Now().UTC(),
+			"description": "Latest successful verification for each cached replica. Historical results, not current health or a per-request audit. An empty list means no replicas have been verified yet.",
+			"records":     gateway.Verifications(),
+		}); err != nil {
+			log.WithError(err).Warn("failed to write verification records")
+		}
+	})
+}
+
 func listenerGuardAddress(configuredAddr, listenAddr string) string {
 	host, _, configuredErr := net.SplitHostPort(configuredAddr)
 	_, port, listenErr := net.SplitHostPort(listenAddr)
@@ -241,70 +223,57 @@ func listenerGuardAddress(configuredAddr, listenAddr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-// newReverseProxy assembles the forwarding pipeline. The logging transport
-// wraps the cache-secret injector, which wraps the reloading upstream, so the
-// injected field survives router-reselection retries and is sealed by the
-// pinned connection beneath before it leaves the machine.
-func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *tokenCounter) *httputil.ReverseProxy {
-	var transport http.RoundTripper = reloading
-	if cacheSecret != "" {
-		transport = &userCacheSecretTransport{secret: cacheSecret, transport: transport}
-	}
+func newReverseProxy(transport http.RoundTripper, host string, tokens *tokenCounter, reportAttestationFailure func(error) error) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "https"
-			host := reloading.get().host
 			req.URL.Host = host
 			req.Host = host
-			if _, ok := req.Header["User-Agent"]; !ok {
-				// Match httputil.NewSingleHostReverseProxy: suppress the
-				// default Go client User-Agent instead of advertising it.
-				req.Header.Set("User-Agent", "")
+			// A nil X-Forwarded-For stops ReverseProxy from adding the client IP.
+			header := http.Header{"X-Forwarded-For": nil}
+			for _, name := range forwardedHeaders {
+				if values := req.Header.Values(name); len(values) > 0 {
+					header[name] = values
+				}
 			}
+			// Match httputil.NewSingleHostReverseProxy: suppress the
+			// default Go client User-Agent instead of advertising it.
+			header.Set("User-Agent", "")
+			req.Header = header
 		},
 		Transport: withLoggingTransport(log.StandardLogger(), transport, tokens),
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.WithError(err).Error("proxy error")
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
+			var config *tinfoil.ConfigurationError
+			if errors.As(err, &config) {
+				http.Error(w, config.Error(), http.StatusBadRequest)
+				return
+			}
+			var attestation *tinfoil.AttestationError
+			if reportAttestationFailure != nil && errors.As(err, &attestation) {
+				if reportErr := reportAttestationFailure(err); reportErr != nil {
+					log.WithError(reportErr).Warn("failed to report attestation failure")
+				}
+			}
+			w.WriteHeader(http.StatusBadGateway)
+		},
 	}
 }
 
-type upstream struct {
-	host                 string
-	repo                 string
-	transport            http.RoundTripper
-	verificationDocument func() *verifierclient.VerificationDocument
-}
-
-// buildUpstream verifies and pins a router. When no enclave host is pinned via
-// flags, the SDK reselects a healthy router from the router service, which is
-// what lets the proxy recover when the current router rotates or goes down.
-//
-// Request and response bodies are sealed end-to-end to the attested HPKE key.
-// The SDK transport decrypts responses and drops the Content-Length that
-// described the encrypted bytes, so the reverse proxy forwards accurate
-// framing. It also retries once after an HPKE key rotation, which relies on
-// request bodies being replayable (see setReplayableBody).
-func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
-	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportEHBP)}
-	if requestedEnclave != "" || requestedRepo != "" {
-		opts = append(opts, tinfoil.WithEnclave(requestedEnclave), tinfoil.WithRepo(requestedRepo))
+func refreshCatalog(host string, catalog *atomic.Pointer[tinfoil.Catalog]) {
+	for range time.Tick(catalogRefreshInterval) {
+		fetched, err := tinfoil.FetchCatalog(host)
+		if err != nil {
+			log.WithError(err).Warn("failed to refresh gateway catalog")
+			continue
+		}
+		catalog.Store(&fetched)
 	}
-	tinfoilClient, err := tinfoil.NewClientWithOptions(opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &upstream{
-		host:                 tinfoilClient.Enclave(),
-		repo:                 tinfoilClient.Repo(),
-		transport:            tinfoilClient.HTTPClient().Transport,
-		verificationDocument: tinfoilClient.VerificationDocument,
-	}, nil
-}
-
-func newProxyInstanceID() (string, error) {
-	id := make([]byte, proxyInstanceIDBytes)
-	if _, err := rand.Read(id); err != nil {
-		return "", fmt.Errorf("generate proxy instance ID: %w", err)
-	}
-	return hex.EncodeToString(id), nil
 }
 
 func proxyVersion() string {
@@ -317,226 +286,21 @@ func proxyVersion() string {
 	return "devel"
 }
 
-func verificationDocumentHandler(reloading *reloadingUpstream, runtime proxyRuntime) http.Handler {
+// The gateway only routes requests that name a model, so the list comes from its catalog.
+func modelsHandler(catalog *atomic.Pointer[tinfoil.Catalog], gateway *tinfoil.Gateway) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		document, ok := currentVerificationDocument(reloading, runtime)
-		if !ok {
-			http.Error(w, "verification document unavailable", http.StatusServiceUnavailable)
-			return
+		models := []map[string]string{}
+		for _, id := range slices.Sorted(maps.Keys(*catalog.Load())) {
+			if !gateway.Serves(id) {
+				continue
+			}
+			models = append(models, map[string]string{"id": id, "object": "model", "owned_by": "tinfoil"})
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(document); err != nil {
-			log.WithError(err).Warn("failed to write verification document")
+		if err := json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": models}); err != nil {
+			log.WithError(err).Warn("failed to write model list")
 		}
 	})
-}
-
-func currentVerificationDocument(reloading *reloadingUpstream, runtime proxyRuntime) (*proxyVerificationDocument, bool) {
-	current := reloading.get()
-	if current.verificationDocument == nil {
-		return nil, false
-	}
-	document := current.verificationDocument()
-	if document == nil {
-		return nil, false
-	}
-	return &proxyVerificationDocument{
-		VerificationDocument: document,
-		Runtime:              runtime,
-	}, true
-}
-
-var errReloadCoolingDown = errors.New("upstream reload attempted too recently")
-
-// reloadingUpstream routes requests to the current upstream and, when a
-// request fails at the transport level, rebuilds the secure client (rerunning
-// router selection and attestation) and retries the request when it is
-// idempotent and its body can be replayed. This keeps the proxy working
-// across router rotations and outages without a restart.
-type reloadingUpstream struct {
-	build func() (*upstream, error)
-
-	mu         sync.RWMutex
-	current    *upstream
-	generation uint64
-
-	reloadMu    sync.Mutex
-	lastAttempt time.Time
-
-	documentMu           sync.Mutex
-	lastDocumentKey      verificationDocumentKey
-	onVerificationChange func(*verifierclient.VerificationDocument)
-}
-
-type verificationDocumentKey struct {
-	verifiedAt         string
-	enclaveHost        string
-	releaseTag         string
-	releaseDigest      string
-	tlsPublicKey       string
-	hpkePublicKey      string
-	codeFingerprint    string
-	enclaveFingerprint string
-}
-
-func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
-	reloading := &reloadingUpstream{build: build, current: initial}
-	if initial.verificationDocument != nil {
-		if document := initial.verificationDocument(); document != nil {
-			reloading.lastDocumentKey = documentKey(document)
-		}
-	}
-	return reloading
-}
-
-func (r *reloadingUpstream) get() *upstream {
-	current, _ := r.snapshot()
-	return current
-}
-
-func (r *reloadingUpstream) snapshot() (*upstream, uint64) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.current, r.generation
-}
-
-func (r *reloadingUpstream) RoundTrip(req *http.Request) (*http.Response, error) {
-	current, generation := r.snapshot()
-	resp, err := current.transport.RoundTrip(requestForHost(req, current.host))
-	r.notifyVerificationChange(current, generation)
-	if err == nil {
-		return resp, nil
-	}
-	if req.Context().Err() != nil {
-		return resp, err
-	}
-
-	next, reloadErr := r.reload(current)
-	if reloadErr != nil {
-		return nil, err
-	}
-	retry, ok := replayableRequest(req, next.host)
-	if !ok {
-		return nil, err
-	}
-	resp, err = next.transport.RoundTrip(retry)
-	_, generation = r.snapshot()
-	r.notifyVerificationChange(next, generation)
-	return resp, err
-}
-
-// reload swaps in a freshly verified upstream. Concurrent failing requests
-// serialize here so only one rebuild runs, and a cooldown prevents hammering
-// the router service and attestation endpoints when upstream stays down.
-func (r *reloadingUpstream) reload(failed *upstream) (*upstream, error) {
-	r.reloadMu.Lock()
-	defer r.reloadMu.Unlock()
-
-	current := r.get()
-	if current != failed {
-		return current, nil
-	}
-	if time.Since(r.lastAttempt) < upstreamReloadCooldown {
-		return nil, errReloadCoolingDown
-	}
-	r.lastAttempt = time.Now()
-
-	log.WithField("enclave_host", failed.host).Warn("upstream request failed, reselecting router")
-	next, err := r.build()
-	if err != nil {
-		log.WithError(err).Error("router reselection failed")
-		return nil, err
-	}
-	r.mu.Lock()
-	r.current = next
-	r.generation++
-	generation := r.generation
-	r.mu.Unlock()
-	r.notifyVerificationChange(next, generation)
-	log.WithField("enclave_host", next.host).Info("router reselection succeeded")
-	return next, nil
-}
-
-func (r *reloadingUpstream) notifyVerificationChange(current *upstream, generation uint64) {
-	r.documentMu.Lock()
-	defer r.documentMu.Unlock()
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.current != current || r.generation != generation {
-		return
-	}
-	if current.verificationDocument == nil {
-		return
-	}
-	document := current.verificationDocument()
-	if document == nil || document.VerifiedAt == "" {
-		return
-	}
-	key := documentKey(document)
-	if key == r.lastDocumentKey {
-		return
-	}
-	r.lastDocumentKey = key
-	if r.onVerificationChange != nil {
-		r.onVerificationChange(document)
-	}
-}
-
-func documentKey(document *verifierclient.VerificationDocument) verificationDocumentKey {
-	return verificationDocumentKey{
-		verifiedAt:         document.VerifiedAt,
-		enclaveHost:        document.EnclaveHost,
-		releaseTag:         document.ReleaseTag,
-		releaseDigest:      document.ReleaseDigest,
-		tlsPublicKey:       document.TLSPublicKey,
-		hpkePublicKey:      document.HPKEPublicKey,
-		codeFingerprint:    document.CodeFingerprint,
-		enclaveFingerprint: document.EnclaveFingerprint,
-	}
-}
-
-func requestForHost(req *http.Request, host string) *http.Request {
-	out := req.Clone(req.Context())
-	out.URL.Host = host
-	out.Host = host
-	return out
-}
-
-// idempotentRequest mirrors net/http's request replayability rules. A
-// transport error can surface after the router already processed the request,
-// so only requests that are safe to execute twice may be retried
-// automatically.
-func idempotentRequest(req *http.Request) bool {
-	switch req.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
-		return true
-	}
-	return req.Header.Get("Idempotency-Key") != "" || req.Header.Get("X-Idempotency-Key") != ""
-}
-
-func replayableRequest(req *http.Request, host string) (*http.Request, bool) {
-	if !idempotentRequest(req) {
-		return nil, false
-	}
-	retry := requestForHost(req, host)
-	if req.Body == nil || req.Body == http.NoBody {
-		return retry, true
-	}
-	if req.GetBody == nil {
-		return nil, false
-	}
-	body, err := req.GetBody()
-	if err != nil {
-		return nil, false
-	}
-	retry.Body = body
-	return retry, true
 }
 
 // allowedHosts builds the Host header allowlist. All entries are stored
@@ -750,8 +514,19 @@ func ensureStreamUsageIncluded(req *http.Request) error {
 }
 
 func setRequestBody(req *http.Request, body []byte) {
-	setReplayableBody(req, body)
+	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
+}
+
+// decodeConsumedAll reports whether dec has nothing left but trailing
+// whitespace: a follow-up Token read returns io.EOF only at true end of
+// input. dec.More() is not enough here — it reports "no more elements" at a
+// trailing '}' or ']', so a malformed body like `{...}}` would be
+// re-marshaled without its trailing bytes and a request the enclave rejects
+// would quietly become one it accepts.
+func decodeConsumedAll(dec *json.Decoder) bool {
+	_, err := dec.Token()
+	return err == io.EOF
 }
 
 type tokenCounter struct {
