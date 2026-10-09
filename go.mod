@@ -6,7 +6,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
 	github.com/tinfoilsh/encrypted-http-body-protocol v0.3.2
-	github.com/tinfoilsh/tinfoil-go v0.17.0-rc.1.0.20261009012920-31c57af7d7b4
+	github.com/tinfoilsh/tinfoil-go v0.17.0-rc.2
 )
 
 require (
