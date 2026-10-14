@@ -400,6 +400,7 @@ jobs:
       - name: Sign Docker image
         env:
           OWNER: ${{ github.repository_owner }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           OWNER_LC="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
@@ -414,6 +415,6 @@ jobs:
             echo '```'
             echo "Verify:"
             echo '```'
-            echo "cosign verify --certificate-identity-regexp '^https://github.com/tinfoilsh/tinfoil-proxy/' --certificate-oidc-issuer https://token.actions.githubusercontent.com ${IMAGE}@${DIGEST}"
+            echo "cosign verify --certificate-identity 'https://github.com/tinfoilsh/tinfoil-proxy/.github/workflows/release.yml@refs/tags/${TAG}' --certificate-oidc-issuer https://token.actions.githubusercontent.com ${IMAGE}@${DIGEST}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
