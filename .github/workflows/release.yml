@@ -354,11 +354,15 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # cosign keyless signing (Sigstore OIDC)
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -390,4 +394,26 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --build-arg VERSION="${TAG}" \
             "${TAGS[@]}" \
+            --metadata-file "${RUNNER_TEMP}/build-metadata.json" \
             --push .
+
+      - name: Sign Docker image
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          OWNER_LC="$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER_LC}/tinfoil-proxy"
+          DIGEST="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/build-metadata.json")"
+          test -n "$DIGEST" && [ "$DIGEST" != "null" ]
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          {
+            echo "### Docker image"
+            echo '```'
+            echo "${IMAGE}@${DIGEST}"
+            echo '```'
+            echo "Verify:"
+            echo '```'
+            echo "cosign verify --certificate-identity-regexp '^https://github.com/tinfoilsh/tinfoil-proxy/' --certificate-oidc-issuer https://token.actions.githubusercontent.com ${IMAGE}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
