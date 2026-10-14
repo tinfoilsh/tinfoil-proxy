@@ -50,7 +50,12 @@ jobs:
           test "$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")" = "$(git rev-parse HEAD)"
           VERSION="$(node -p "require('./app/package.json').version")"
           test "v${VERSION}" = "$RELEASE_TAG"
-          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          # Patch releases may also come from the release branch for their
+          # minor line (v0.2.4 and v0.2.5-rc.1 -> release/v0.2).
+          RELEASE_BRANCH="refs/remotes/origin/release/$(cut -d. -f1,2 <<<"$RELEASE_TAG")"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main ||
+            { git rev-parse --verify --quiet "$RELEASE_BRANCH" >/dev/null &&
+              git merge-base --is-ancestor HEAD "$RELEASE_BRANCH"; }
 
   build:
     name: Build & publish (${{ matrix.os }})
