@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
-	github.com/tinfoilsh/encrypted-http-body-protocol v0.3.2
+	github.com/tinfoilsh/encrypted-http-body-protocol v0.4.1
 	github.com/tinfoilsh/tinfoil-go v0.16.2
 )
 
