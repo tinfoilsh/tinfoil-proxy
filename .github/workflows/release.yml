@@ -354,6 +354,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -374,6 +376,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push multi-arch image
+        id: build
         env:
           OWNER: ${{ github.repository_owner }}
           TAG: ${{ github.ref_name }}
@@ -390,4 +393,13 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --build-arg VERSION="${TAG}" \
             "${TAGS[@]}" \
+            --metadata-file "${RUNNER_TEMP}/build-metadata.json" \
             --push .
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          jq -r '"digest=\(."containerimage.digest")"' "${RUNNER_TEMP}/build-metadata.json" >> "$GITHUB_OUTPUT"
+
+      - name: Attest Docker image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
