@@ -33,10 +33,11 @@ Multi-user services must send a distinct `user_cache_secret` for each user on ev
 Requires the Go version in [`go.mod`](go.mod); the desktop app also needs Node.js 20.
 
 ```sh
-go run .                               # run the proxy
 go test ./...
-cd app && npm install && npm run dev   # desktop app with hot reload
+go run .   # run the proxy until interrupted
 ```
+
+For the desktop app with hot reload, run `npm install && npm run dev` in `app/`.
 
 Read [AGENTS.md](AGENTS.md) before cutting a release. This is the canonical home for the proxy; the `tinfoil proxy` subcommand in [tinfoil-cli](https://github.com/tinfoilsh/tinfoil-cli) is deprecated.
 
