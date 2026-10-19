@@ -99,9 +99,9 @@ The proxy exposes the verification result used by its active upstream transport:
 curl http://127.0.0.1:3301/verification-document
 ```
 
-The JSON includes the accepted release digest and measurements, attested key
-fingerprints, verifier identity and version, and the local time verification
-completed. Its `runtime.instanceId` is generated once per proxy process and
+The JSON uses the SDK's `VerifiedDocumentV3` fields, including `CodeDigest`,
+`CryptoMaterial`, `Verifier`, `VerifiedAt`, and `FreshnessExpiresAt`.
+Its `runtime.instanceId` is generated once per proxy process and
 `runtime.listener` identifies the listener serving the document. A successful
 upstream re-verification replaces the verification fields while preserving the
 runtime identity. Responses use `Cache-Control: no-store`.
@@ -146,7 +146,7 @@ See the [app guide](https://docs.tinfoil.sh/local-proxy/app) for the full walkth
 
 ### Proxy only (Go)
 
-Requires Go 1.25+. No Node.js needed.
+Requires Go 1.27.2+. No Node.js needed.
 
 ```sh
 go run .            # run the proxy locally
@@ -155,7 +155,7 @@ go build -o tinfoil-proxy .
 
 ### Desktop app (Electron)
 
-Requires Node.js 20+ and Go 1.25+ (the app embeds the Go binary). All app commands run from the `app/` directory.
+Requires Node.js 20+ and Go 1.27.2+ (the app embeds the Go binary). All app commands run from the `app/` directory.
 
 ```sh
 cd app
