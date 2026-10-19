@@ -14,7 +14,7 @@ The release pipeline (`.github/workflows/release.yml`) selects its upload target
 - The **CLI binaries** job uploads to the git tag (`github.ref_name`).
 - The **desktop installers** are uploaded by `electron-builder --publish always`, which targets the GitHub release matching `app/package.json` version, NOT the tag.
 
-If the version and tag disagree, the two halves publish to different releases: the CLI binaries land on the tag while the `.dmg/.pkg/.zip/.exe/.deb` and `latest*.yml` auto-update files land on the release matching the stale version. This is exactly what happened with `v0.0.12` (package.json was still `0.0.11`).
+If the version and tag disagree, the CLI binaries land on the tag while the installers and `latest*.yml` auto-update files land on the release matching the stale version.
 
 ## Cutting a release
 
