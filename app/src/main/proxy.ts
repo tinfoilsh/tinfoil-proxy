@@ -15,36 +15,21 @@ const PORT_IN_USE_PATTERN = /address already in use|EADDRINUSE/i
 
 type CliProcess = ChildProcessByStdio<Writable, Readable, Readable>
 
-const verificationStepSchema = z.object({
-  status: z.enum(['success', 'skipped']),
-  error: z.string().optional()
-})
-
 const proxyVerificationDocumentSchema = z.object({
-  schemaVersion: z.literal(1),
-  configRepo: z.string().min(1),
-  enclaveHost: z.string().min(1),
-  releaseTag: z.string().min(1).optional(),
-  releaseDigest: z.string().min(1),
-  codeMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
-  enclaveMeasurement: z.object({
-    measurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) })
-  }),
-  tlsPublicKey: z.string().min(1),
-  hpkePublicKey: z.string().min(1),
-  codeFingerprint: z.string().min(1),
-  enclaveFingerprint: z.string().min(1),
-  selectedRouterEndpoint: z.string().min(1),
-  securityVerified: z.literal(true),
-  verifier: z.object({ name: z.string().min(1), version: z.string().min(1) }),
-  verifiedAt: z.string().min(1),
-  steps: z.object({
-    fetchDigest: verificationStepSchema,
-    verifyCode: verificationStepSchema,
-    verifyEnclave: verificationStepSchema,
-    compareMeasurements: verificationStepSchema,
-    verifyCertificate: verificationStepSchema
-  }),
+  ConfigRepo: z.string().min(1),
+  EnclaveHost: z.string().min(1),
+  CodeTag: z.string(),
+  CodeDigest: z.string().min(1),
+  CodeMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
+  EnclaveMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
+  CryptoMaterial: z.array(z.object({
+    id: z.string().min(1),
+    format: z.string().min(1),
+    data: z.string().min(1)
+  })).min(1),
+  Verifier: z.object({ name: z.string().min(1), version: z.string().min(1) }),
+  VerifiedAt: z.string().min(1),
+  FreshnessExpiresAt: z.string().min(1),
   runtime: z.object({
     instanceId: z.string().min(1),
     listener: z.string().min(1),
@@ -334,7 +319,7 @@ export async function startProxy(
         if (
           document.runtime.instanceId !== acceptedInstanceID ||
           document.runtime.listener !== `${PROXY_LISTEN_HOST}:${port}` ||
-          document.configRepo !== acceptedRepo
+          document.ConfigRepo !== acceptedRepo
         ) {
           setProxyState({
             verified: false,
@@ -343,7 +328,7 @@ export async function startProxy(
           proc.kill('SIGTERM')
           return
         }
-        setProxyState({ enclave: document.enclaveHost, verifiedAt: document.verifiedAt })
+        setProxyState({ enclave: document.EnclaveHost, verifiedAt: document.VerifiedAt })
         return
       }
       if (message.event === 'invalid-ready') {
@@ -426,8 +411,8 @@ export async function startProxy(
   if (
     document.runtime.instanceId !== ready.instanceId ||
     document.runtime.listener !== ready.listen ||
-    document.enclaveHost !== ready.enclave ||
-    document.configRepo !== ready.repo ||
+    document.EnclaveHost !== ready.enclave ||
+    document.ConfigRepo !== ready.repo ||
     ready.listen !== `${PROXY_LISTEN_HOST}:${port}`
   ) {
     setProxyState({
@@ -451,7 +436,7 @@ export async function startProxy(
     running: true,
     verifying: false,
     verified: true,
-    verifiedAt: document.verifiedAt,
+    verifiedAt: document.VerifiedAt,
     lastError: undefined
   })
   return { port, endpoint: proxyEndpoint(port) }

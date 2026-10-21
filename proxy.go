@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tinfoilsh/tinfoil-go"
 	verifierclient "github.com/tinfoilsh/tinfoil-go/verifier/client"
+	"github.com/tinfoilsh/tinfoil-go/verifier/measurement"
 )
 
 const (
@@ -53,7 +55,7 @@ type proxyRuntime struct {
 }
 
 type proxyVerificationDocument struct {
-	*verifierclient.VerificationDocument
+	*verifierclient.VerifiedDocumentV3
 	Runtime proxyRuntime `json:"runtime"`
 }
 
@@ -187,10 +189,10 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		},
 	}
 	if handshake {
-		reloading.onVerificationChange = func(document *verifierclient.VerificationDocument) {
+		reloading.onVerificationChange = func(document *verifierclient.VerifiedDocumentV3) {
 			if err := emitVerification(&proxyVerificationDocument{
-				VerificationDocument: document,
-				Runtime:              runtime,
+				VerifiedDocumentV3: document,
+				Runtime:            runtime,
 			}); err != nil {
 				log.WithError(err).Warn("failed to emit updated verification document")
 			}
@@ -270,7 +272,7 @@ type upstream struct {
 	host                 string
 	repo                 string
 	transport            http.RoundTripper
-	verificationDocument func() *verifierclient.VerificationDocument
+	verificationDocument func() *verifierclient.VerifiedDocumentV3
 }
 
 // buildUpstream verifies and pins a router. When no enclave host is pinned via
@@ -283,7 +285,11 @@ type upstream struct {
 // framing. It also retries once after an HPKE key rotation, which relies on
 // request bodies being replayable (see setReplayableBody).
 func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
-	opts := []tinfoil.ClientOption{tinfoil.WithTransport(tinfoil.TransportEHBP)}
+	opts := []tinfoil.ClientOption{
+		tinfoil.WithTransport(tinfoil.TransportEHBP),
+		// The proxy applies the CLI flag and environment policy before sealing.
+		tinfoil.WithUserCacheSecret(""),
+	}
 	if requestedEnclave != "" || requestedRepo != "" {
 		opts = append(opts, tinfoil.WithEnclave(requestedEnclave), tinfoil.WithRepo(requestedRepo))
 	}
@@ -295,7 +301,7 @@ func buildUpstream(requestedEnclave, requestedRepo string) (*upstream, error) {
 		host:                 tinfoilClient.Enclave(),
 		repo:                 tinfoilClient.Repo(),
 		transport:            tinfoilClient.HTTPClient().Transport,
-		verificationDocument: tinfoilClient.VerificationDocument,
+		verificationDocument: tinfoilClient.Verification,
 	}, nil
 }
 
@@ -347,8 +353,8 @@ func currentVerificationDocument(reloading *reloadingUpstream, runtime proxyRunt
 		return nil, false
 	}
 	return &proxyVerificationDocument{
-		VerificationDocument: document,
-		Runtime:              runtime,
+		VerifiedDocumentV3: document,
+		Runtime:            runtime,
 	}, true
 }
 
@@ -371,7 +377,7 @@ type reloadingUpstream struct {
 
 	documentMu           sync.Mutex
 	lastDocumentKey      verificationDocumentKey
-	onVerificationChange func(*verifierclient.VerificationDocument)
+	onVerificationChange func(*verifierclient.VerifiedDocumentV3)
 }
 
 type verificationDocumentKey struct {
@@ -381,8 +387,8 @@ type verificationDocumentKey struct {
 	releaseDigest      string
 	tlsPublicKey       string
 	hpkePublicKey      string
-	codeFingerprint    string
-	enclaveFingerprint string
+	codeFingerprint    [sha256.Size]byte
+	enclaveFingerprint [sha256.Size]byte
 }
 
 func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
@@ -488,17 +494,26 @@ func (r *reloadingUpstream) notifyVerificationChange(current *upstream, generati
 	}
 }
 
-func documentKey(document *verifierclient.VerificationDocument) verificationDocumentKey {
+func documentKey(document *verifierclient.VerifiedDocumentV3) verificationDocumentKey {
+	tlsPublicKey, _ := document.TLSPublicKeyFP()
+	hpkePublicKey, _ := document.HPKEPublicKey()
 	return verificationDocumentKey{
 		verifiedAt:         document.VerifiedAt,
 		enclaveHost:        document.EnclaveHost,
-		releaseTag:         document.ReleaseTag,
-		releaseDigest:      document.ReleaseDigest,
-		tlsPublicKey:       document.TLSPublicKey,
-		hpkePublicKey:      document.HPKEPublicKey,
-		codeFingerprint:    document.CodeFingerprint,
-		enclaveFingerprint: document.EnclaveFingerprint,
+		releaseTag:         document.CodeTag,
+		releaseDigest:      document.CodeDigest,
+		tlsPublicKey:       tlsPublicKey,
+		hpkePublicKey:      hpkePublicKey,
+		codeFingerprint:    measurementFingerprint(document.CodeMeasurement),
+		enclaveFingerprint: measurementFingerprint(document.EnclaveMeasurement),
 	}
+}
+
+func measurementFingerprint(value *measurement.Measurement) [sha256.Size]byte {
+	// This string-only struct has a deterministic, infallible JSON encoding.
+	// Snapshot the predicate and ordered registers, including nil measurements.
+	encoded, _ := json.Marshal(value)
+	return sha256.Sum256(encoded)
 }
 
 func requestForHost(req *http.Request, host string) *http.Request {
