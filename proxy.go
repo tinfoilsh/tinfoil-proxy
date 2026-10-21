@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tinfoilsh/tinfoil-go"
 	verifierclient "github.com/tinfoilsh/tinfoil-go/verifier/client"
+	"github.com/tinfoilsh/tinfoil-go/verifier/measurement"
 )
 
 const (
@@ -379,12 +381,14 @@ type reloadingUpstream struct {
 }
 
 type verificationDocumentKey struct {
-	verifiedAt    string
-	enclaveHost   string
-	releaseTag    string
-	releaseDigest string
-	tlsPublicKey  string
-	hpkePublicKey string
+	verifiedAt         string
+	enclaveHost        string
+	releaseTag         string
+	releaseDigest      string
+	tlsPublicKey       string
+	hpkePublicKey      string
+	codeFingerprint    [sha256.Size]byte
+	enclaveFingerprint [sha256.Size]byte
 }
 
 func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
@@ -494,13 +498,22 @@ func documentKey(document *verifierclient.VerifiedDocumentV3) verificationDocume
 	tlsPublicKey, _ := document.TLSPublicKeyFP()
 	hpkePublicKey, _ := document.HPKEPublicKey()
 	return verificationDocumentKey{
-		verifiedAt:    document.VerifiedAt,
-		enclaveHost:   document.EnclaveHost,
-		releaseTag:    document.CodeTag,
-		releaseDigest: document.CodeDigest,
-		tlsPublicKey:  tlsPublicKey,
-		hpkePublicKey: hpkePublicKey,
+		verifiedAt:         document.VerifiedAt,
+		enclaveHost:        document.EnclaveHost,
+		releaseTag:         document.CodeTag,
+		releaseDigest:      document.CodeDigest,
+		tlsPublicKey:       tlsPublicKey,
+		hpkePublicKey:      hpkePublicKey,
+		codeFingerprint:    measurementFingerprint(document.CodeMeasurement),
+		enclaveFingerprint: measurementFingerprint(document.EnclaveMeasurement),
 	}
+}
+
+func measurementFingerprint(value *measurement.Measurement) [sha256.Size]byte {
+	// This string-only struct has a deterministic, infallible JSON encoding.
+	// Snapshot the predicate and ordered registers, including nil measurements.
+	encoded, _ := json.Marshal(value)
+	return sha256.Sum256(encoded)
 }
 
 func requestForHost(req *http.Request, host string) *http.Request {

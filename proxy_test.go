@@ -17,6 +17,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	verifierclient "github.com/tinfoilsh/tinfoil-go/verifier/client"
 	"github.com/tinfoilsh/tinfoil-go/verifier/document"
+	"github.com/tinfoilsh/tinfoil-go/verifier/measurement"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -250,6 +251,51 @@ func TestVerificationNotificationsDetectKeyRotation(t *testing.T) {
 	reloading.notifyVerificationChange(current, generation)
 	if notifications != 1 {
 		t.Fatalf("expected one notification for the rotated key, got %d", notifications)
+	}
+}
+
+func TestVerificationNotificationsDetectMeasurementChanges(t *testing.T) {
+	for _, field := range []string{"code", "enclave"} {
+		t.Run(field, func(t *testing.T) {
+			verified := &verifierclient.VerifiedDocumentV3{
+				VerifiedAt: "2026-10-19T00:00:00Z",
+				CodeMeasurement: &measurement.Measurement{
+					Type:      measurement.SevGuestV2,
+					Registers: []string{strings.Repeat("ab", 48)},
+				},
+				EnclaveMeasurement: &measurement.Measurement{
+					Type:      measurement.SevGuestV2,
+					Registers: []string{strings.Repeat("ab", 48)},
+				},
+			}
+			current := &upstream{verificationDocument: func() *verifierclient.VerifiedDocumentV3 { return verified }}
+			reloading := newReloadingUpstream(current, nil)
+			notifications := 0
+			reloading.onVerificationChange = func(*verifierclient.VerifiedDocumentV3) { notifications++ }
+			_, generation := reloading.snapshot()
+			target := &verified.CodeMeasurement
+			if field == "enclave" {
+				target = &verified.EnclaveMeasurement
+			}
+
+			// A new allocation with the same measurement is not a change.
+			*target = &measurement.Measurement{
+				Type:      (*target).Type,
+				Registers: append([]string(nil), (*target).Registers...),
+			}
+			reloading.notifyVerificationChange(current, generation)
+			if notifications != 0 {
+				t.Fatalf("equivalent measurement emitted %d notifications", notifications)
+			}
+
+			// Only the measurement changes; all other document fields stay fixed.
+			(*target).Registers[0] = strings.Repeat("cd", 48)
+			reloading.notifyVerificationChange(current, generation)
+			reloading.notifyVerificationChange(current, generation)
+			if notifications != 1 {
+				t.Fatalf("expected one notification for the changed measurement, got %d", notifications)
+			}
+		})
 	}
 }
 
