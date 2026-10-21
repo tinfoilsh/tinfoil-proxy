@@ -265,6 +265,17 @@ func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *t
 			}
 		},
 		Transport: withLoggingTransport(log.StandardLogger(), transport, tokens),
+		ModifyResponse: func(resp *http.Response) error {
+			// EHBP can pass through unauthenticated outer redirects. A local
+			// client following one would leave this proxy's verified path and
+			// could replay its original plaintext body (notably for 307/308).
+			// Reject every 3xx before forwarding headers or reading the body;
+			// ReverseProxy closes the body and returns 502 on this error.
+			if resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest {
+				return fmt.Errorf("upstream redirects are not allowed (status %d)", resp.StatusCode)
+			}
+			return nil
+		},
 	}
 }
 
