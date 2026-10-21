@@ -66,6 +66,8 @@ jobs:
     environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -132,6 +134,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run ${{ matrix.package_script }} -- --publish always
 
+      # Attest every packaged installer and auto-update manifest produced on
+      # this runner so the desktop app's updater can authenticate updates
+      # against the release workflow identity before installing them.
+      - name: Attest desktop artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            app/dist/**/*.dmg
+            app/dist/**/*.pkg
+            app/dist/**/*.zip
+            app/dist/**/*.deb
+            app/dist/**/*.exe
+            app/dist/**/latest*.yml
+
   cli-binaries:
     name: Build standalone CLI
     needs:
@@ -143,6 +159,8 @@ jobs:
     environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -245,6 +263,14 @@ jobs:
           done
 
           ls -la release-bin
+
+      # Attest the signed, notarized standalone binaries before they are
+      # uploaded so downloads can authenticate them against the release
+      # workflow identity.
+      - name: Attest standalone CLI binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-bin/tinfoil-proxy-*
 
       - name: Restore existing recovery assets
         if: github.event_name == 'workflow_dispatch'
