@@ -5,6 +5,7 @@ import { trayIcon, trayIconState } from './icons.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
 import { hidePopup, showDetailsWindow, togglePopup } from './popup.js'
 import { proxyEndpoint, startProxy, stopProxy } from './proxy.js'
+import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
 
 const isLinux = process.platform === 'linux'
@@ -32,14 +33,15 @@ function reportClickError(promise: Promise<void>, context: string): void {
 }
 
 function isActive(state: TrayState): boolean {
-  return state.proxy.enabled && state.proxy.running
+  return state.proxy.enabled && state.proxy.running && state.proxy.verified
 }
 
 function headerLabel(state: TrayState): string {
   const { proxy } = state
   if (!proxy.enabled) return '● Tinfoil Proxy — Off'
-  if (proxy.lastError) return '● Tinfoil Proxy — Failed to start'
-  if (proxy.running) return '● Tinfoil Proxy — Ready'
+  if (proxy.lastError) return '● Tinfoil Proxy — Attestation failed'
+  if (proxy.verifying) return '○ Tinfoil Proxy — Verifying enclave…'
+  if (proxy.running && proxy.verified) return '● Tinfoil Proxy — On'
   return '○ Tinfoil Proxy — Starting…'
 }
 
@@ -69,6 +71,16 @@ function buildMenu(state: TrayState, openDetails: () => void): Menu {
       }
     })
   }
+
+  items.push(
+    { type: 'separator' },
+    {
+      label: 'Refresh routers',
+      click: () => {
+        reportClickError(refreshRouters(), 'Failed to refresh routers')
+      }
+    }
+  )
 
   const note = state.proxy.lastError ?? state.lastError
   if (note && !(state.proxy.enabled && state.proxy.running)) {
@@ -131,13 +143,15 @@ export function createTray(): Tray {
     if (!tray) return
     const state = stateStore.get()
     const active = isActive(state)
-    const proxyStatus = state.proxy.lastError
+    const verificationStatus = state.proxy.lastError
       ? 'failed'
-      : state.proxy.running
-        ? 'ready'
-        : 'initializing'
-    tray.setImage(trayIcon(trayIconState(active, proxyStatus)))
-    tray.setToolTip(active ? `Tinfoil Proxy — On (${state.proxy.gateway ?? 'gateway'})` : 'Tinfoil Proxy — Off')
+      : state.proxy.verifying
+        ? 'initializing'
+        : state.proxy.verified
+          ? 'verified'
+          : 'initializing'
+    tray.setImage(trayIcon(trayIconState(active, verificationStatus)))
+    tray.setToolTip(active ? `Tinfoil Proxy — On (${state.proxy.enclave ?? 'enclave'})` : 'Tinfoil Proxy — Off')
     contextMenu = buildMenu(state, openTrayDetails)
     // On Linux the indicator backend ignores click events and popUpContextMenu;
     // setContextMenu is the only way to make the tray interactive (and quittable).

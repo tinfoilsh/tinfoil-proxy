@@ -1,6 +1,6 @@
 # Tinfoil Proxy
 
-A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, forwards requests through the Tinfoil gateway to an enclave serving the requested model, verifies that enclave against the public attestation transparency log, and encrypts request and response bodies to it with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol), so neither the gateway nor any other intermediary can read them. Point any OpenAI-compatible tool at the local URL and every request runs over a verified connection.
+A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, forwards requests directly to a verified Tinfoil router enclave, verifies that enclave against the public attestation transparency log, and encrypts request and response bodies to it with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol), so intermediaries cannot read them. Point any OpenAI-compatible tool at the local URL and every request runs over a verified connection.
 
 [![Documentation](https://img.shields.io/badge/docs-tinfoil.sh-blue)](https://docs.tinfoil.sh/local-proxy/cli)
 
@@ -20,11 +20,11 @@ Or run `go install github.com/tinfoilsh/tinfoil-proxy@latest`, run `docker run -
 tinfoil-proxy
 ```
 
-Point any OpenAI-compatible client at `http://127.0.0.1:3301/v1`. The proxy forwards only the `Authorization`, `Content-Type`, and `Accept` headers and rejects request bodies over 64 MiB. Run `tinfoil-proxy --help` for all flags, and see the [CLI docs](https://docs.tinfoil.sh/local-proxy/cli) and the [coding agents guide](https://docs.tinfoil.sh/tutorials/coding-agents).
+Point any OpenAI-compatible client at `http://127.0.0.1:3301/v1`. Run `tinfoil-proxy --help` for all flags, and see the [CLI docs](https://docs.tinfoil.sh/local-proxy/cli) and the [coding agents guide](https://docs.tinfoil.sh/tutorials/coding-agents).
 
-`--pin MODEL=REF` constrains a model to `tinfoilsh/name`, `tinfoilsh/name@tag`, or `tinfoilsh/name@sha256:<digest>`; repeat it for each model. A repository-only pin follows that repository's releases, and a digest pin accepts only that artifact. `--pinned-only` refuses every model without a pin. Restart the proxy to change pins.
+By default, the proxy selects and verifies a healthy Tinfoil router. Use `--host` and `--repo` to select a specific enclave and its configuration repository.
 
-`http://127.0.0.1:3301/verifications` lists the latest successful verification of each replica the proxy has used. These are historical results, not current health, and model names are routing labels, not attested identities.
+`http://127.0.0.1:3301/verification-document` exposes the active enclave verification document. The desktop app displays the same verification data from its proxy process.
 
 Multi-user services must send a distinct `user_cache_secret` for each user on every eligible request rather than rely on the proxy-wide default; see [Prompt caching](https://docs.tinfoil.sh/sdk/prompt-caching).
 

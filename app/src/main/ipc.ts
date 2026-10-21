@@ -1,10 +1,11 @@
 import { clipboard, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 
 import { loadConfig, saveConfig, sanitizeAllowedHosts } from './config.js'
-import { PROXY_DEFAULT_PORT, PROXY_LISTEN_HOST } from './constants.js'
+import { PROXY_DEFAULT_PORT } from './constants.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
 import { getPopup, notifyPopup, setPopupCompactHeight } from './popup.js'
-import { proxyEndpoint, startProxy, stopProxy } from './proxy.js'
+import { proxyEndpoint, startProxy, stopProxy, verificationDocumentEndpoint } from './proxy.js'
+import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
 
 function isFromPopup(event: IpcMainInvokeEvent): boolean {
@@ -15,12 +16,23 @@ function isFromPopup(event: IpcMainInvokeEvent): boolean {
 }
 
 function snapshotForRenderer(state: TrayState) {
+  const sortedRouters = [...state.routers].sort((a, b) => a.router.localeCompare(b.router))
+  const anonymized = sortedRouters.map((r, index) => ({
+    router: r.router,
+    label: `Router ${index + 1}`,
+    status: r.status,
+    lastError: r.lastError
+  }))
+
   const endpoint =
     state.proxy.enabled && state.proxy.running && state.proxy.port > 0
       ? proxyEndpoint(state.proxy.port)
       : undefined
 
   return {
+    status: state.status,
+    statusMessage: state.statusMessage,
+    routers: anonymized,
     endpoint,
     proxy: state.proxy,
     launchAtLogin: state.launchAtLogin,
@@ -50,14 +62,15 @@ export function registerIpc(): void {
     return snap.endpoint
   })
 
-  ipcMain.handle('tray:openVerifications', async (event) => {
+  ipcMain.handle('tray:openVerificationDocument', async (event) => {
     if (!isFromPopup(event)) return false
-    const { running, port } = stateStore.get().proxy
-    if (!running || port <= 0) return false
+    const proxy = stateStore.get().proxy
+    if (!proxy.running || !proxy.verified || proxy.port <= 0) return false
     try {
-      await shell.openExternal(`http://${PROXY_LISTEN_HOST}:${port}/verifications`)
+      await shell.openExternal(verificationDocumentEndpoint(proxy.port))
       return true
-    } catch {
+    } catch (err) {
+      console.error('[tray] failed to open verification document:', err)
       return false
     }
   })
@@ -112,6 +125,12 @@ export function registerIpc(): void {
     } else {
       stateStore.set({ proxy: { ...proxy, allowedHosts: sanitized } })
     }
+    return snapshotForRenderer(stateStore.get())
+  })
+
+  ipcMain.handle('tray:refreshRouters', async (event) => {
+    if (!isFromPopup(event)) return null
+    await refreshRouters()
     return snapshotForRenderer(stateStore.get())
   })
 
