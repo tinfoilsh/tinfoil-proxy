@@ -31,7 +31,9 @@
     "package:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "@tinfoilsh/verifier": "^1.2.2",
+    "electron-updater": "^6.8.9",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
