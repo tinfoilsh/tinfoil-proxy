@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+# Builder and runtime are digest-pinned (Go 1.27.3, Alpine 3.24 with the
+# post CVE-2026-111943 ca-certificates); refresh both digests together on
+# any toolchain or base-image bump.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,8 +12,9 @@ ARG TARGETOS TARGETARCH VERSION=unknown
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w -X main.buildVersion=$VERSION" -o /tinfoil-proxy .
 
-FROM alpine:latest
-RUN apk add --no-cache ca-certificates
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+RUN apk add --no-cache 'ca-certificates>20261020-r0' && \
+    test "$(apk info -v ca-certificates | cut -d- -f2)" = "20261020-r0"
 COPY --from=build /tinfoil-proxy /usr/bin/tinfoil-proxy
 EXPOSE 3301
 ENTRYPOINT ["/usr/bin/tinfoil-proxy"]
