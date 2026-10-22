@@ -111,8 +111,7 @@ export async function verifyUpdateAttestation(downloadedFile: string, version: s
   }
 
   // GitHub serves attestation bundles snappy-compressed from short-lived
-  // blob URLs. Try each listed bundle; the first one that verifies
-  // authenticates the update.
+  // blob URLs.
   let lastError: Error | undefined = undefined
   for (const bundleURL of bundleURLs) {
     try {

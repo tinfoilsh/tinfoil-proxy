@@ -124,4 +124,3 @@ export default {
         }
     ]
 };
-//# sourceMappingURL=sigstore-trusted-root.js.map
