@@ -16,18 +16,14 @@ import {
 // so update trust is not bootstrapped over the network path being defended.
 import sigstoreTrustedRoot from './sigstore-trusted-root.js'
 
-// Desktop updates are authenticated against Sigstore attestations produced
-// by the release workflow before they are installed. The checksums embedded
-// in latest*.yml travel over the same TLS connection as the update itself,
-// so on their own they rule out corruption, not an attacker controlling the
-// network path. Attestations pin the signer to this repository's release
-// workflow run from the release tag, and are fetched from api.github.com, an
-// origin independent of the release CDN serving the update.
+// Updates are verified against Sigstore attestations fetched from
+// api.github.com (independent of the release CDN) before install; the
+// checksums in latest*.yml share the update's TLS connection and only
+// rule out corruption.
 
 const ATTESTATIONS_URL = 'https://api.github.com/repos/tinfoilsh/tinfoil-proxy/attestations'
 const ATTESTATION_MAX_BYTES = 4 << 20
-// Verification must never hang: a pending verification would otherwise
-// hold install-on-quit open for an unverified download.
+// A pending verification must not hold install-on-quit open.
 const ATTESTATION_TIMEOUT_MS = 30_000
 
 interface AttestationEnvelope {
@@ -140,9 +136,8 @@ async function verifyBundleAt(bundleURL: string, digest: string, version: string
   }
 
   const bundle = JSON.parse(new TextDecoder().decode(bundleJSON))
-  // Only the v0.3 single-certificate layout is accepted, matching the SDKs:
-  // the legacy x509CertificateChain layout can carry extra CA certificates
-  // under the signing certificate.
+  // Legacy x509CertificateChain layout can carry extra CA certificates
+  // under the signing certificate; only v0.3 single-cert is accepted.
   if (bundle?.verificationMaterial?.x509CertificateChain) {
     throw new Error('legacy bundle format not supported')
   }
