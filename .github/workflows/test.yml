@@ -43,6 +43,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test
+        run: npm run test
+
       - name: Build
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
