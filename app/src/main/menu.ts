@@ -49,6 +49,7 @@ function buildMenu(state: TrayState, openDetails: () => void): Menu {
   const enabled = state.proxy.enabled
   const items: MenuItemConstructorOptions[] = [
     { label: headerLabel(state), enabled: false },
+    { label: `Version ${app.getVersion()}`, enabled: false },
     { type: 'separator' },
     {
       label: enabled ? 'Stop proxy' : 'Start proxy',
