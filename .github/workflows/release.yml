@@ -469,4 +469,4 @@ jobs:
           if [[ "$TAG" == *-* ]]; then
             ARGS+=(--prerelease --latest=false)
           fi
-          gh release edit "$TAG" "${ARGS[@]}"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" "${ARGS[@]}"
