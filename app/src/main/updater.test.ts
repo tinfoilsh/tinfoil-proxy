@@ -87,6 +87,7 @@ describe('startAutoUpdater', () => {
     resolveVerification()
     await run
 
+    expect(mocks.verifyUpdateAttestation).toHaveBeenCalledWith('/tmp/update.zip', '0.2.7')
     expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(true)
     expect(mocks.showMessageBox).toHaveBeenCalledTimes(1)
   })
@@ -101,6 +102,7 @@ describe('startAutoUpdater', () => {
       version: '0.2.7'
     })
 
+    expect(mocks.verifyUpdateAttestation).toHaveBeenCalledWith('/tmp/update.zip', '0.2.7')
     expect(mocks.autoUpdater.autoInstallOnAppQuit).toBe(false)
     expect(mocks.showMessageBox).not.toHaveBeenCalled()
     expect(mocks.autoUpdater.quitAndInstall).not.toHaveBeenCalled()
