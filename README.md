@@ -28,6 +28,10 @@ By default, the proxy selects and verifies a healthy Tinfoil router. Use `--host
 
 Multi-user services must send a distinct `user_cache_secret` for each user on every eligible request rather than rely on the proxy-wide default; see [Prompt caching](https://docs.tinfoil.sh/sdk/prompt-caching).
 
+## Desktop updates
+
+The app authenticates downloaded updates against the release workflow's Sigstore attestation before offering them. The first release that contains the updater is installed by the previous version without verification; subsequent updates are verified.
+
 ## Development
 
 Requires the Go version in [`go.mod`](go.mod); the desktop app also needs Node.js 20.

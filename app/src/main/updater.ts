@@ -1,6 +1,8 @@
 import { app, dialog } from 'electron'
 import pkg from 'electron-updater'
 
+import { verifyUpdateAttestation } from './update-attestation.js'
+
 const { autoUpdater } = pkg
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -14,6 +16,17 @@ export function startAutoUpdater(): void {
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('update-downloaded', async (info) => {
+    // Install-on-quit stays off until verification passes, so quitting
+    // mid-verification cannot install the unverified download.
+    autoUpdater.autoInstallOnAppQuit = false
+    try {
+      await verifyUpdateAttestation(info.downloadedFile, info.version)
+    } catch (err) {
+      console.error('[updater] update attestation verification failed; not installing:', err)
+      return
+    }
+    autoUpdater.autoInstallOnAppQuit = true
+
     const choice = await dialog.showMessageBox({
       type: 'info',
       title: 'Tinfoil Proxy update ready',

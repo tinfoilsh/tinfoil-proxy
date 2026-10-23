@@ -31,8 +31,10 @@
     "package:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
+    "@freedomofpress/sigstore-browser": "^0.1.15",
     "@tinfoilsh/verifier": "^1.2.2",
     "electron-updater": "^6.8.9",
+    "snappyjs": "^0.7.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -40,6 +42,7 @@
     "@types/node": "^22.20.1",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.1",
+    "@types/snappyjs": "^0.7.1",
     "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.65.0",
     "electron": "^42.11.18",
