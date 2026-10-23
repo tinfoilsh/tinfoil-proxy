@@ -66,6 +66,8 @@ jobs:
     environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -113,10 +115,18 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Package & publish (macOS)
+      # Publish to a DRAFT release first: drafts are invisible to the public
+      # and to the auto-updater. Artifacts are uploaded to the draft before
+      # attestation runs, but stay hidden until attestation has passed on
+      # every platform and the finalize job publishes the release.
+      # NOTE: EP_DRAFT takes precedence over EP_PRE_RELEASE in
+      # electron-publish, so the finalize job restores the prerelease flag
+      # for -rc tags when it publishes.
+      - name: Package & publish to draft (macOS)
         if: startsWith(matrix.os, 'macos')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EP_DRAFT: 'true'
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
           CSC_INSTALLER_LINK: ${{ secrets.APPLE_INSTALLER_P12_BASE64 }}
@@ -126,11 +136,27 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run ${{ matrix.package_script }} -- --publish always
 
-      - name: Package & publish (Linux/Windows)
+      - name: Package & publish to draft (Linux/Windows)
         if: ${{ !startsWith(matrix.os, 'macos') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EP_DRAFT: 'true'
         run: npm run ${{ matrix.package_script }} -- --publish always
+
+      # Attest every packaged installer and auto-update manifest produced on
+      # this runner so the desktop app's updater can authenticate updates
+      # against the release workflow identity before installing them. The
+      # draft stays invisible until this has passed on every platform.
+      - name: Attest desktop artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            app/dist/**/*.dmg
+            app/dist/**/*.pkg
+            app/dist/**/*.zip
+            app/dist/**/*.deb
+            app/dist/**/*.exe
+            app/dist/**/latest*.yml
 
   cli-binaries:
     name: Build standalone CLI
@@ -143,6 +169,8 @@ jobs:
     environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       RECOVERY_MODE: ${{ github.event_name == 'workflow_dispatch' }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -285,6 +313,15 @@ jobs:
             fi
           done
 
+      # Attest exactly the binaries that will be uploaded: after the
+      # recovery restore step, so recovery runs attest the downloaded
+      # copies instead of binaries that are then discarded, and before the
+      # upload so an attestation failure stops the release.
+      - name: Attest standalone CLI binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-bin/tinfoil-proxy-*
+
       - name: Generate checksums
         run: |
           set -euo pipefail
@@ -403,3 +440,33 @@ jobs:
         with:
           subject-name: ${{ steps.build.outputs.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
+
+  # Publish the release only after every artifact group is built, attested,
+  # and uploaded: the build job publishes installers to a draft release
+  # (invisible to users and the auto-updater), and this job publishes it.
+  # EP_DRAFT overrides EP_PRE_RELEASE in electron-publish, so release
+  # candidates must have their prerelease flag restored here.
+  finalize:
+    name: Publish release
+    needs:
+      - build
+      - cli-binaries
+      - docker
+    if: ${{ github.event_name == 'push' && needs.build.result == 'success' && needs.cli-binaries.result == 'success' && needs.docker.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ARGS=(--draft=false)
+          if [[ "$TAG" == *-* ]]; then
+            ARGS+=(--prerelease --latest=false)
+          fi
+          gh release edit "$TAG" "${ARGS[@]}"
