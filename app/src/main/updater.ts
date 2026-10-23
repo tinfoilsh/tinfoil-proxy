@@ -25,6 +25,7 @@ export function startAutoUpdater(): void {
       console.error('[updater] update attestation verification failed; not installing:', err)
       return
     }
+    console.info('[updater] attestation verified for', info.version)
     autoUpdater.autoInstallOnAppQuit = true
 
     const choice = await dialog.showMessageBox({
