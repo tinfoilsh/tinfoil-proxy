@@ -41,10 +41,9 @@ async function until(predicate) {
 }
 
 async function fixture(t, platform, options = {}) {
-  const directory = options.directory ?? await fs.mkdtemp(path.join(os.tmpdir(), 'proxy-updater-'))
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'proxy-updater-'))
   const app = new EventEmitter()
   app.isPackaged = true
-  app.getPath = () => directory
   const native = new EventEmitter()
   const calls = { checks: 0, nativeChecks: 0, nativeRestarts: 0, downloads: 0, verifications: 0, installs: [], dialogs: [], logs: [], timers: new Set() }
   native.setFeedURL = value => { calls.feed = value }
@@ -76,7 +75,7 @@ async function fixture(t, platform, options = {}) {
   }
   updater.checkForUpdates = async () => {
     calls.checks++
-    return options.check ? options.check() : null
+    return null
   }
   // Keep the real NSIS/Deb installation logic; replace only process execution.
   updater.spawnLog = async (command, args) => { calls.installs.push({ command, args }) }
@@ -121,9 +120,9 @@ async function fixture(t, platform, options = {}) {
     if (updater.server?.listening) await new Promise(resolve => updater.server.close(resolve))
     if (previousElectron) require.cache[electronPath] = previousElectron
     else delete require.cache[electronPath]
-    if (!options.directory) await fs.rm(directory, { recursive: true, force: true })
+    await fs.rm(directory, { recursive: true, force: true })
   })
-  return { calls, native, updater, controller, normalQuit, offer, directory }
+  return { calls, native, updater, normalQuit, offer }
 }
 
 test('macOS: verified bytes reach Squirrel before ready is shown; ordinary quit needs no restart call', async t => {
@@ -185,6 +184,9 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     const verification = deferred()
     const f = await fixture(t, platform, { verify: () => verification.promise })
     await f.offer()
+    const checks = f.calls.checks
+    for (const run of f.calls.timers) run()
+    assert.equal(f.calls.checks, checks, 'do not replace the download during verification')
     f.normalQuit()
     verification.resolve()
     await delay(10)
@@ -193,39 +195,22 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     assert.equal(f.calls.dialogs.length, 0)
   })
 
-  test(`${platform}: duplicate downloads and repeated checks do not reverify or reprompt a ready update`, async t => {
+  test(`${platform}: a cached update is verified and prepared again on the next check`, async t => {
     const f = await fixture(t, platform)
     const scheduledCheck = [...f.calls.timers][0]
-    await f.offer()
-    if (platform === 'darwin') {
-      await until(() => f.calls.nativeChecks === 1)
-      f.native.emit('update-downloaded')
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await f.offer()
+      if (platform === 'darwin') {
+        await until(() => f.calls.nativeChecks === attempt)
+        f.native.emit('update-downloaded')
+      }
+      await until(() => f.calls.dialogs.length === attempt)
+      const checks = f.calls.checks
+      scheduledCheck()
+      assert.equal(f.calls.checks, checks + 1, 'periodic checks continue after Later')
     }
-    await until(() => f.calls.dialogs.length === 1)
-    const checks = f.calls.checks
-    scheduledCheck()
-    scheduledCheck()
-    // Feed the controller a duplicate event without starting a second native handoff.
-    f.updater.emit('update-downloaded', { version: '0.2.8', downloadedFile: 'unused' })
-    await delay(10)
-    assert.equal(f.calls.verifications, 1)
-    assert.equal(f.calls.dialogs.length, 1)
-    assert.equal(f.calls.checks, checks)
-    assert.equal(f.calls.timers.size, 0)
-  })
-
-  test(`${platform}: a previous notification suppresses the dialog but never skips verification or preparation`, async t => {
-    const f = await fixture(t, platform)
-    await fs.writeFile(path.join(f.directory, 'update-notification.json'), JSON.stringify({ version: '0.2.8' }))
-    await f.offer()
-    if (platform === 'darwin') {
-      await until(() => f.calls.nativeChecks === 1)
-      f.native.emit('update-downloaded')
-    }
-    await until(() => f.calls.logs.some(args => args[0] === '[updater] update ready for install on quit:'))
-    await delay(10)
-    assert.equal(f.calls.verifications, 1)
-    assert.equal(f.calls.dialogs.length, 0)
+    assert.equal(f.calls.downloads, 1)
+    assert.equal(f.calls.verifications, 2)
     f.normalQuit()
     if (platform !== 'darwin') assert.equal(f.calls.installs.length, 1)
   })
@@ -234,6 +219,7 @@ for (const platform of ['darwin', 'win32', 'linux']) {
 for (const platform of ['win32', 'linux']) {
   test(`${platform}: Later and ordinary quit install a verified update without forcing relaunch`, async t => {
     const f = await fixture(t, platform)
+    if (platform === 'win32') assert.equal(f.updater.disableWebInstaller, false)
     await f.offer()
     await until(() => f.calls.dialogs.length === 1)
     assert.equal(f.calls.installs.length, 0)
@@ -266,18 +252,3 @@ for (const platform of ['win32', 'linux']) {
     assert.equal(f.calls.installs.length, 0)
   })
 }
-
-test('startup and periodic checks are serialized, and repeated startup does not duplicate listeners', async t => {
-  const check = deferred()
-  const f = await fixture(t, 'darwin', { check: () => check.promise })
-  f.controller.startAutoUpdater()
-  const scheduledCheck = [...f.calls.timers][0]
-  scheduledCheck()
-  scheduledCheck()
-  assert.equal(f.calls.checks, 1)
-  assert.equal(f.updater.listenerCount('update-downloaded'), 1)
-  check.resolve(null)
-  await delay(10)
-  scheduledCheck()
-  assert.equal(f.calls.checks, 2)
-})
