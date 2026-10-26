@@ -18,6 +18,7 @@
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
+    "test:updater": "node --test tests/updater.test.cjs",
     "build:cli": "bash scripts/build-cli.sh",
     "dev": "npm run build:cli && electron-vite dev",
     "build": "npm run build:cli && electron-vite build",
