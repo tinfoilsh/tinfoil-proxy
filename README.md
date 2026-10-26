@@ -45,6 +45,8 @@ go run .   # run the proxy until interrupted
 
 For the desktop app with hot reload, run `npm install && npm run dev` in `app/`.
 
+See [Testing desktop updates](docs/testing-desktop-updates.md) for unpublished test builds and native update checks on macOS, Windows, and Linux.
+
 Read [AGENTS.md](AGENTS.md) before cutting a release. This is the canonical home for the proxy; the `tinfoil proxy` subcommand in [tinfoil-cli](https://github.com/tinfoilsh/tinfoil-cli) is deprecated.
 
 ## Reporting Vulnerabilities
