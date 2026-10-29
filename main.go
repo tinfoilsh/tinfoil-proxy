@@ -16,8 +16,9 @@ var loopbackBinds = map[string]bool{
 }
 
 const (
-	defaultListenPort uint   = 3301
-	defaultListenAddr string = "127.0.0.1"
+	defaultListenPort    uint   = 3301
+	defaultListenAddr    string = "127.0.0.1"
+	disableHostCheckFlag        = "disable-host-check"
 )
 
 var (
@@ -31,6 +32,7 @@ var (
 	trace            bool
 	handshake        bool
 	allowedHostnames []string
+	disableHostCheck bool
 )
 
 var deprecatedAllowedOrigins []string
@@ -48,6 +50,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
 	rootCmd.Flags().StringSliceVar(&allowedHostnames, "allowed-host", nil, "Additional Host header hostname to allow (values without a port also match portless Host headers)")
+	rootCmd.Flags().BoolVar(&disableHostCheck, disableHostCheckFlag, false, "Disable Host header validation and DNS-rebinding protection (trusted networks only; overrides --allowed-host)")
 	rootCmd.Flags().StringSliceVar(&deprecatedAllowedOrigins, "allowed-origin", nil, "Deprecated; all Origin header values are allowed")
 	_ = rootCmd.Flags().MarkDeprecated("allowed-origin", "all Origin header values are allowed by default")
 	rootCmd.Flags().StringVar(&userCacheSecret, userCacheSecretFlag, "", "Prompt-cache scoping secret added to forwarded requests (empty is unset; default: generated and persisted)")

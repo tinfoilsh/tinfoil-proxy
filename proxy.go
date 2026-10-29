@@ -609,6 +609,9 @@ func isUnspecifiedBind(host string) bool {
 }
 
 func localOnlyGuard(addr string, next http.Handler) http.Handler {
+	if disableHostCheck {
+		return next
+	}
 	hosts := allowedHosts(addr)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := hosts[strings.ToLower(r.Host)]; !ok {

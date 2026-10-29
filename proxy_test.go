@@ -319,6 +319,60 @@ func TestExtractTokenUsageSupportsResponsesUsage(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyGuardHostCheckFlag(t *testing.T) {
+	withAllowedHostnames(t, []string{"tinfoil"})
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantStatus int
+	}{
+		{name: "default", wantStatus: http.StatusBadRequest},
+		{name: "disabled", args: []string{"--" + disableHostCheckFlag}, wantStatus: http.StatusNoContent},
+		{name: "explicitly enabled", args: []string{"--" + disableHostCheckFlag + "=false"}, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := disableHostCheck
+			flag := rootCmd.Flags().Lookup(disableHostCheckFlag)
+			wasChanged := flag.Changed
+			t.Cleanup(func() {
+				disableHostCheck = previous
+				flag.Changed = wasChanged
+			})
+			if err := rootCmd.ParseFlags(tc.args); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, addr := range []string{"127.0.0.1:3301", "0.0.0.0:3301"} {
+				guard := localOnlyGuard(addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				for _, host := range []string{
+					"proxy.internal:8080",
+					"proxy.internal",
+					"localhost:3001",
+					"127.2.3.4:3001",
+					"[::1]:3001",
+					"tinfoil:3301",
+				} {
+					t.Run(addr+"/"+host, func(t *testing.T) {
+						req := httptest.NewRequest(http.MethodGet, "http://"+host+"/v1/models", nil)
+						rec := httptest.NewRecorder()
+						guard.ServeHTTP(rec, req)
+
+						wantStatus := tc.wantStatus
+						if host == "tinfoil:3301" {
+							wantStatus = http.StatusNoContent
+						}
+						if rec.Code != wantStatus {
+							t.Fatalf("expected %d, got %d: %s", wantStatus, rec.Code, rec.Body.String())
+						}
+					})
+				}
+			}
+		})
+	}
+}
+
 func TestLocalOnlyGuardAllowsConfiguredContainerHostOnUnspecifiedBind(t *testing.T) {
 	withAllowedHostnames(t, []string{"tinfoil"})
 	nextCalled := false
