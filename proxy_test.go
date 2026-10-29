@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,103 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestReverseProxyRejectsRedirectResponses(t *testing.T) {
+	for _, status := range []int{300, 301, 302, 303, 304, 305, 306, 307, 308, 399} {
+		for _, location := range []string{"https://attacker.example/collect", "//attacker.example/collect", "https://enclave.example/next", "/next", ""} {
+			t.Run(fmt.Sprintf("%d/%s", status, location), func(t *testing.T) {
+				reader := strings.NewReader("untrusted upstream body")
+				body := &closeTrackingBody{Reader: reader}
+				upstreamCalls := 0
+				reloading := newReloadingUpstream(&upstream{
+					host: "enclave.example",
+					transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+						upstreamCalls++
+						return &http.Response{
+							StatusCode: status,
+							Header: http.Header{
+								"Location":   {location},
+								"Refresh":    {"0;url=" + location},
+								"Set-Cookie": {"untrusted=value"},
+								"X-Upstream": {"untrusted"},
+							},
+							Body: body,
+						}, nil
+					}),
+				}, func() (*upstream, error) {
+					t.Error("redirect rejection must not trigger router reselection")
+					return nil, errors.New("unexpected reload")
+				})
+				// Exercise the desktop app's token-tracking response wrapper too.
+				proxy := newReverseProxy(reloading, "", newTokenCounter(nil))
+				recorder := httptest.NewRecorder()
+				proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/test", nil))
+
+				if recorder.Code != http.StatusBadGateway {
+					t.Errorf("expected 502, got %d", recorder.Code)
+				}
+				for _, header := range []string{"Location", "Refresh", "Set-Cookie", "X-Upstream"} {
+					if values := recorder.Header().Values(header); len(values) != 0 {
+						t.Errorf("upstream %s header reached the client: %q", header, values)
+					}
+				}
+				if recorder.Body.Len() != 0 || reader.Len() != len("untrusted upstream body") {
+					t.Error("rejected response body was read or forwarded")
+				}
+				if !body.closed {
+					t.Error("rejected response body was not closed")
+				}
+				if upstreamCalls != 1 {
+					t.Errorf("expected one upstream request, got %d", upstreamCalls)
+				}
+			})
+		}
+	}
+}
+
+func TestReverseProxyPreservesNonRedirectResponses(t *testing.T) {
+	for _, status := range []int{200, 201, 204, 299, 400, 401, 403, 404, 429, 500, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			wantBody := "upstream response"
+			if status == http.StatusNoContent {
+				wantBody = ""
+			}
+			reloading := newReloadingUpstream(&upstream{
+				host: "enclave.example",
+				transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: status,
+						Header: http.Header{
+							"Content-Type": {"text/plain"},
+							"Location":     {"/created-resource"},
+						},
+						Body: io.NopCloser(strings.NewReader(wantBody)),
+					}, nil
+				}),
+			}, nil)
+			proxy := newReverseProxy(reloading, "", nil)
+			recorder := httptest.NewRecorder()
+			proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/test", nil))
+
+			if recorder.Code != status || recorder.Body.String() != wantBody {
+				t.Errorf("response changed: got %d %q, want %d %q", recorder.Code, recorder.Body.String(), status, wantBody)
+			}
+			if recorder.Header().Get("Content-Type") != "text/plain" || recorder.Header().Get("Location") != "/created-resource" {
+				t.Errorf("non-redirect response headers changed: %v", recorder.Header())
+			}
+		})
+	}
 }
 
 func TestVerificationDocumentHandler(t *testing.T) {

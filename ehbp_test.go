@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	ehbpclient "github.com/tinfoilsh/encrypted-http-body-protocol/client"
 	ehbpidentity "github.com/tinfoilsh/encrypted-http-body-protocol/identity"
@@ -101,6 +103,89 @@ func startProxy(t *testing.T, enclave *ehbpEnclave, cacheSecret string) *httptes
 	server := httptest.NewServer(proxy)
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestEHBPProxyRejectsOuterRedirects(t *testing.T) {
+	identity, err := ehbpidentity.NewIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		for _, request := range []struct {
+			name        string
+			method      string
+			path        string
+			contentType string
+			body        string
+		}{
+			{"prompt", http.MethodPost, "/v1/chat/completions", "application/json", `{"messages":[{"role":"user","content":"private prompt"}]}`},
+			{"upload", http.MethodPut, "/v1/files", "application/octet-stream", "private upload\x00\xff"},
+			{"tool payload", http.MethodPost, "/v1/responses", "application/json", `{"input":[{"type":"function_call_output","output":"private tool output"}]}`},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", status, request.name), func(t *testing.T) {
+				var targetRequests atomic.Int32
+				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, _ := io.ReadAll(r.Body)
+					targetRequests.Add(1)
+					t.Errorf("redirect target received %s with body %q", r.Method, body)
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer target.Close()
+
+				var outerRequests atomic.Int32
+				outer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read encrypted request: %v", err)
+					}
+					outerRequests.Add(1)
+					if len(body) == 0 || strings.Contains(string(body), "private") {
+						t.Errorf("expected an encrypted request at the outer endpoint, got %q", body)
+					}
+					// No EHBP middleware or response nonce: this redirect is
+					// supplied by an unauthenticated outer endpoint.
+					w.Header().Set("Location", target.URL+"/collect")
+					w.WriteHeader(status)
+					fmt.Fprint(w, "untrusted redirect body")
+				}))
+				defer outer.Close()
+				proxy := startProxy(t, &ehbpEnclave{server: outer, identity: identity}, "proxy-secret")
+
+				// The normal Go redirect policy replays this original plaintext
+				// body on 307/308 because NewRequest supplies GetBody.
+				req, err := http.NewRequest(request.method, proxy.URL+request.path, strings.NewReader(request.body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req.Header.Set("Content-Type", request.contentType)
+				client := &http.Client{Timeout: 5 * time.Second}
+				resp, err := client.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != http.StatusBadGateway {
+					t.Errorf("expected 502, got %d", resp.StatusCode)
+				}
+				if location := resp.Header.Get("Location"); location != "" {
+					t.Errorf("redirect Location reached the local client: %q", location)
+				}
+				if strings.Contains(string(body), "untrusted redirect body") {
+					t.Errorf("redirect body reached the local client: %q", body)
+				}
+				if got := outerRequests.Load(); got != 1 {
+					t.Errorf("expected one encrypted upstream request, got %d", got)
+				}
+				if got := targetRequests.Load(); got != 0 {
+					t.Errorf("expected no requests to redirect target, got %d", got)
+				}
+			})
+		}
+	}
 }
 
 func TestEHBPProxyForwardsFullNonStreamingResponse(t *testing.T) {
