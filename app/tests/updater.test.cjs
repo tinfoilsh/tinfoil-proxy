@@ -42,8 +42,10 @@ async function until(predicate) {
 
 async function fixture(t, platform, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'proxy-updater-'))
+  const userDataPath = options.userDataPath ?? path.join(directory, 'user-data')
   const app = new EventEmitter()
   app.isPackaged = true
+  app.getPath = name => { assert.equal(name, 'userData'); return userDataPath }
   const native = new EventEmitter()
   const calls = { checks: 0, nativeChecks: 0, nativeRestarts: 0, downloads: 0, verifications: 0, installs: [], dialogs: [], logs: [], timers: new Set() }
   native.setFeedURL = value => { calls.feed = value }
@@ -115,6 +117,13 @@ async function fixture(t, platform, options = {}) {
       disableDifferentialDownload: true, disableWebInstaller: updater.disableWebInstaller
     })
   }
+  async function idle() {
+    const checks = calls.checks
+    await until(() => {
+      for (const run of calls.timers) run()
+      return calls.checks > checks
+    })
+  }
   t.after(async () => {
     controller.stopAutoUpdater()
     if (updater.server?.listening) await new Promise(resolve => updater.server.close(resolve))
@@ -122,7 +131,7 @@ async function fixture(t, platform, options = {}) {
     else delete require.cache[electronPath]
     await fs.rm(directory, { recursive: true, force: true })
   })
-  return { calls, native, updater, normalQuit, offer }
+  return { calls, native, updater, normalQuit, offer, idle, userDataPath }
 }
 
 test('macOS: verified bytes reach Squirrel before ready is shown; ordinary quit needs no restart call', async t => {
@@ -195,7 +204,7 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     assert.equal(f.calls.dialogs.length, 0)
   })
 
-  test(`${platform}: a cached update is verified and prepared again on the next check`, async t => {
+  test(`${platform}: a cached update is still verified and prepared without repeating a dismissed prompt`, async t => {
     const f = await fixture(t, platform)
     const scheduledCheck = [...f.calls.timers][0]
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -204,7 +213,8 @@ for (const platform of ['darwin', 'win32', 'linux']) {
         await until(() => f.calls.nativeChecks === attempt)
         f.native.emit('update-downloaded')
       }
-      await until(() => f.calls.dialogs.length === attempt)
+      await f.idle()
+      assert.equal(f.calls.dialogs.length, 1)
       const checks = f.calls.checks
       scheduledCheck()
       assert.equal(f.calls.checks, checks + 1, 'periodic checks continue after Later')
@@ -214,7 +224,57 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     f.normalQuit()
     if (platform !== 'darwin') assert.equal(f.calls.installs.length, 1)
   })
+
+  test(`${platform}: Later survives an app restart but still allows a newer version to prompt`, async t => {
+    const f = await fixture(t, platform)
+    await f.offer()
+    if (platform === 'darwin') {
+      await until(() => f.calls.nativeChecks === 1)
+      f.native.emit('update-downloaded')
+    }
+    await f.idle()
+    assert.equal(f.calls.dialogs.length, 1)
+    f.normalQuit(1)
+
+    const restarted = await fixture(t, platform, { userDataPath: f.userDataPath })
+    await restarted.offer()
+    if (platform === 'darwin') {
+      await until(() => restarted.calls.nativeChecks === 1)
+      restarted.native.emit('update-downloaded')
+    }
+    await restarted.idle()
+    assert.equal(restarted.calls.verifications, 1)
+    assert.equal(restarted.calls.dialogs.length, 0)
+
+    await restarted.offer('0.2.9')
+    if (platform === 'darwin') {
+      await until(() => restarted.calls.nativeChecks === 2)
+      restarted.native.emit('update-downloaded')
+    }
+    await restarted.idle()
+    assert.equal(restarted.calls.verifications, 2)
+    assert.equal(restarted.calls.dialogs.length, 1)
+    assert.equal(restarted.calls.dialogs[0].message, 'Tinfoil Proxy 0.2.9 is ready to install.')
+    restarted.normalQuit()
+    if (platform !== 'darwin') assert.equal(restarted.calls.installs.length, 1)
+  })
 }
+
+test('an inaccessible preference file still allows installation and suppresses repeats in memory', async t => {
+  const f = await fixture(t, 'linux')
+  await fs.writeFile(f.userDataPath, 'not a directory')
+  await f.offer()
+  await f.idle()
+  assert.equal(f.calls.dialogs.length, 1)
+  assert.ok(f.calls.logs.some(args => args[0].startsWith('[updater] could not read dismissed update version:')))
+  assert.ok(f.calls.logs.some(args => args[0].startsWith('[updater] could not save dismissed update version:')))
+
+  await f.offer()
+  await f.idle()
+  assert.equal(f.calls.dialogs.length, 1)
+  f.normalQuit()
+  assert.equal(f.calls.installs.length, 1)
+})
 
 for (const platform of ['win32', 'linux']) {
   test(`${platform}: Later and ordinary quit install a verified update without forcing relaunch`, async t => {

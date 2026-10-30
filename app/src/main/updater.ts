@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs'
+import { join } from 'node:path'
 import { app, autoUpdater as nativeUpdater, dialog } from 'electron'
 import pkg from 'electron-updater'
 
@@ -6,11 +8,13 @@ import { verifyUpdateAttestation } from './update-attestation.js'
 const { autoUpdater } = pkg
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const DISMISSED_UPDATE_VERSION_FILE = 'dismissed-update-version'
 
 let timer: NodeJS.Timeout | undefined
 let stopping = false
 let preparing = false
 let verified = false
+let dismissedVersion: string | undefined
 
 // MacUpdater prepares a loopback feed before emitting update-downloaded, but
 // does not ask Squirrel to fetch it when autoInstallOnAppQuit is false. Start
@@ -62,6 +66,19 @@ export function startAutoUpdater(): void {
       if (stopping) return
       verified = true
 
+      const userDataPath = app.getPath('userData')
+      const dismissalPath = join(userDataPath, DISMISSED_UPDATE_VERSION_FILE)
+      if (dismissedVersion === undefined) {
+        try {
+          dismissedVersion = await fs.readFile(dismissalPath, 'utf8')
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            autoUpdater.logger?.warn(`[updater] could not read dismissed update version: ${error}`)
+          }
+        }
+      }
+      if (stopping || dismissedVersion === info.version) return
+
       const choice = await dialog.showMessageBox({
         type: 'info',
         title: 'Tinfoil Proxy update ready',
@@ -74,6 +91,15 @@ export function startAutoUpdater(): void {
         noLink: true
       })
       if (choice.response === 0 && !stopping) autoUpdater.quitAndInstall()
+      if (choice.response === 1) {
+        dismissedVersion = info.version
+        try {
+          await fs.mkdir(userDataPath, { recursive: true })
+          await fs.writeFile(dismissalPath, dismissedVersion, 'utf8')
+        } catch (error) {
+          autoUpdater.logger?.warn(`[updater] could not save dismissed update version: ${error}`)
+        }
+      }
     } catch (error) {
       console.error('[updater] could not prepare update:', error)
     } finally {
