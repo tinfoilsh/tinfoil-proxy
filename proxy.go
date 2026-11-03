@@ -166,6 +166,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle(verificationPath, verificationDocumentHandler(reloading))
+	mux.Handle(healthzPath, healthzHandler(reloading))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	})
@@ -353,6 +354,30 @@ func verificationDocumentHandler(reloading *reloadingUpstream) http.Handler {
 		if err := json.NewEncoder(w).Encode(verification); err != nil {
 			log.WithError(err).Warn("failed to write verification")
 		}
+	})
+}
+
+// healthzPath is a local-only liveness and readiness endpoint for process
+// managers and Kubernetes probes. It never proxies to the enclave.
+const healthzPath = "/healthz"
+
+// healthzHandler reports whether the proxy currently holds a verified
+// upstream. A 200 means the active transport is attested and ready to serve;
+// a 503 means verification has not completed or the last reload failed, so
+// load balancers and probes should stop routing traffic to this instance.
+func healthzHandler(reloading *reloadingUpstream) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if reloading.verification() == nil {
+			http.Error(w, "verified upstream unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 }
 
