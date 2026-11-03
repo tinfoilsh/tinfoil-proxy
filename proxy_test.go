@@ -101,6 +101,48 @@ func TestVerificationDocumentHandlerRejectsOtherMethods(t *testing.T) {
 	}
 }
 
+func TestHealthzReportsVerifiedUpstream(t *testing.T) {
+	document := &verifierclient.VerifiedDocumentV3{CodeDigest: "digest-1"}
+	reloading := newReloadingUpstream(&upstream{
+		verificationDocument: func() *verifierclient.VerifiedDocumentV3 {
+			return document
+		},
+	}, nil)
+	recorder := httptest.NewRecorder()
+
+	healthzHandler(reloading).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected %d with a verified upstream, got %d", http.StatusOK, recorder.Code)
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache policy, got %q", recorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestHealthzReportsUnavailableWithoutVerifiedUpstream(t *testing.T) {
+	reloading := newReloadingUpstream(&upstream{}, nil)
+	recorder := httptest.NewRecorder()
+
+	healthzHandler(reloading).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d without a verified upstream, got %d", http.StatusServiceUnavailable, recorder.Code)
+	}
+}
+
+func TestHealthzRejectsOtherMethods(t *testing.T) {
+	reloading := newReloadingUpstream(&upstream{}, nil)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, healthzPath, nil)
+
+	healthzHandler(reloading).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, recorder.Code)
+	}
+}
+
 func TestVerificationDocumentHandlerUsesReloadedUpstream(t *testing.T) {
 	document := func(digest string) func() *verifierclient.VerifiedDocumentV3 {
 		return func() *verifierclient.VerifiedDocumentV3 {
