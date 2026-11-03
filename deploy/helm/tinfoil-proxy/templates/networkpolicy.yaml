@@ -1,0 +1,154 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}-ingress
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- range $source := .Values.networkPolicy.ingress.allowedIngressFrom }}
+    - from:
+      {{- if $source.namespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $source.namespace }}
+        {{- with $source.podSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+      {{- else if $source.podSelector }}
+        - podSelector:
+            matchLabels:
+              {{- toYaml $source.podSelector | nindent 14 }}
+      {{- end }}
+    {{- end }}
+{{- if .Values.networkPolicy.egress.useFQDNEgress }}
+---
+# FQDN egress requires Cilium. Standard NetworkPolicy cannot match hostnames;
+# when the CNI is Cilium this policy restricts egress to the exact trusted
+# Tinfoil domains, with DNS and NTP allowed for resolution and clock sync.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}-egress
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  egress:
+    # DNS for the trusted domains; Cilium's FQDN policy learns the answers.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+{{- if .Values.networkPolicy.egress.allowNTP }}
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: {{ .Values.networkPolicy.egress.ntpPort | quote }}
+              protocol: UDP
+{{- end }}
+    - toFQDNs:
+      {{- range $domain := .Values.networkPolicy.egress.trustedDomains }}
+        - matchName: {{ $domain }}
+      {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- else }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}-egress
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+{{- if .Values.networkPolicy.egress.allowDNS }}
+    # DNS: the proxy resolves the trusted domains at startup and on re-verification.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: {{ .Values.networkPolicy.egress.dnsServer.k8sAppLabel }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+{{- if .Values.networkPolicy.egress.allowNTP }}
+    # NTP: attestation freshness checks depend on an accurate local clock.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: UDP
+          port: {{ .Values.networkPolicy.egress.ntpPort }}
+{{- end }}
+{{- if .Values.networkPolicy.egress.tinfoilCIDRs }}
+    # Tinfoil infrastructure, HTTPS only, restricted to the resolved
+    # addresses of the trusted domains. Refresh tinfoilCIDRs when Tinfoil
+    # infrastructure changes.
+    - to:
+      {{- range $cidr := .Values.networkPolicy.egress.tinfoilCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+      {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- else }}
+    # Default: HTTPS to any destination. Tighten by setting useFQDNEgress
+    # (Cilium clusters) or tinfoilCIDRs to the resolved trusted domains.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+    {{- range .Values.networkPolicy.egress.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

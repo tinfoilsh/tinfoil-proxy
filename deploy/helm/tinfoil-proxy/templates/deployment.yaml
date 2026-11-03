@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.global.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- if .Values.rollout.enabled }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.rollout.maxUnavailable }}
+      maxSurge: {{ .Values.rollout.maxSurge }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tinfoil-proxy.selectorLabels" . | nindent 8 }}
+        {{- with .Values.global.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.global.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "tinfoil-proxy.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.global.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tinfoil-proxy
+          {{- $registry := .Values.global.imageRegistry | default .Values.image.registry }}
+          {{- $repo := printf "%s/%s" $registry .Values.image.repository }}
+          {{- if .Values.image.digest }}
+          image: "{{ $repo }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ $repo }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --bind
+            - {{ .Values.proxy.bind | quote }}
+            - --port
+            - {{ .Values.proxy.port | quote }}
+            - --log-format
+            - {{ .Values.proxy.logFormat | quote }}
+            {{- if .Values.proxy.disableHostCheck }}
+            - --disable-host-check
+            {{- end }}
+            {{- range .Values.proxy.allowedHosts }}
+            - --allowed-host
+            - {{ . | quote }}
+            {{- end }}
+            {{- if and .Values.proxy.enclaveHost .Values.proxy.enclaveRepo }}
+            - --host
+            - {{ .Values.proxy.enclaveHost | quote }}
+            - --repo
+            - {{ .Values.proxy.enclaveRepo | quote }}
+            {{- end }}
+            {{- if .Values.proxy.userCacheSecret.existingSecret }}
+            - --user-cache-secret
+            - $(USER_CACHE_SECRET)
+            {{- end }}
+            {{- range .Values.proxy.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- if .Values.proxy.userCacheSecret.existingSecret }}
+          env:
+            - name: USER_CACHE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.proxy.userCacheSecret.existingSecret }}
+                  key: user-cache-secret
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.proxy.port }}
+              protocol: TCP
+          {{- if .Values.healthcheck.enabled }}
+          readinessProbe:
+            {{- if eq .Values.healthcheck.type "http" }}
+            httpGet:
+              path: /healthz
+              port: http
+            {{- else }}
+            tcpSocket:
+              port: http
+            {{- end }}
+            initialDelaySeconds: {{ .Values.healthcheck.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthcheck.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthcheck.readiness.timeoutSeconds }}
+            successThreshold: {{ .Values.healthcheck.readiness.successThreshold }}
+            failureThreshold: {{ .Values.healthcheck.readiness.failureThreshold }}
+          livenessProbe:
+            {{- if eq .Values.healthcheck.type "http" }}
+            httpGet:
+              path: /healthz
+              port: http
+            {{- else }}
+            tcpSocket:
+              port: http
+            {{- end }}
+            initialDelaySeconds: {{ .Values.healthcheck.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthcheck.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthcheck.liveness.timeoutSeconds }}
+            successThreshold: {{ .Values.healthcheck.liveness.successThreshold }}
+            failureThreshold: {{ .Values.healthcheck.liveness.failureThreshold }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- if .Values.resources.override }}
+            {{- toYaml .Values.resources.override | nindent 12 }}
+            {{- else }}
+            {{- toYaml (index .Values.resources .Values.global.resourceTier | default .Values.resources.medium) | nindent 12 }}
+            {{- end }}

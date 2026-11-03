@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tinfoil-proxy
+description: A verified local HTTP proxy to a Tinfoil secure enclave, packaged for Kubernetes deployment in front of an OpenAI-compatible API gateway.
+type: application
+version: 0.1.0
+appVersion: "v0.2.9"

@@ -1,0 +1,276 @@
+# Default values for the tinfoil-proxy chart.
+#
+# The chart follows common Kubernetes gateway-chart conventions so platform
+# teams can review and deploy it with familiar knobs: a global.resourceTier
+# sizing knob, hardened pod/container security contexts by default, an HPA
+# with a stabilized scale-down, a PodDisruptionBudget, rolling-update
+# settings, and an opt-in NetworkPolicy.
+#
+# The proxy is transparent to credentials: the API gateway in front of it
+# authenticates to Tinfoil with its own provider credentials, and this proxy
+# verifies the enclave and forwards. No Tinfoil API key is stored by this
+# chart.
+
+## @section Global settings
+global:
+  ## @param global.resourceTier Resource deployment type: small, medium, or large.
+  ## Selects the resource requests/limits applied to the proxy container.
+  resourceTier: "medium"
+
+  ## @param global.imageRegistry Image registry override (for mirroring into a
+  ## private registry, e.g. registry.internal)
+  imageRegistry: ""
+
+  ## @param global.imagePullSecrets Existing image pull secret names
+  imagePullSecrets: []
+  #  - name: my-registry-secret
+
+  ## @param global.labels Labels applied to all rendered objects
+  labels: {}
+  ## @param global.annotations Annotations applied to all rendered objects
+  annotations: {}
+  ## @param global.podLabels Labels applied to pods
+  podLabels: {}
+  ## @param global.podAnnotations Annotations applied to pods
+  podAnnotations: {}
+  ## @param global.nodeSelector Node selector for pods
+  nodeSelector: {}
+  ## @param global.tolerations Tolerations for pods
+  tolerations: []
+  ## @param global.affinity Affinity rules for pods
+  affinity: {}
+
+## @section Proxy image and arguments
+image:
+  ## @param image.registry Image registry (overridden by global.imageRegistry when set)
+  registry: ghcr.io
+  ## @param image.repository Image repository
+  repository: tinfoilsh/tinfoil-proxy
+  ## @param image.tag Image tag (defaults to chart appVersion; ignored when image.digest is set)
+  tag: ""
+  ## @param image.digest Immutable content digest of the image. When set it wins over
+  ## image.tag, pinning the exact bytes that run. Prefer this in production: a tag is a
+  ## mutable pointer, a digest is cryptographic. Copy it from the release attestation or
+  ## `docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/tinfoilsh/tinfoil-proxy:<tag>`.
+  digest: ""
+  ## @param image.pullPolicy Image pull policy
+  pullPolicy: IfNotPresent
+
+proxy:
+  ## @param proxy.port Port the proxy listens on inside the container
+  port: 3301
+
+  ## @param proxy.bind Address the proxy binds to inside the container
+  bind: "0.0.0.0"
+
+  ## @param proxy.enclaveHost Pin a specific enclave hostname; empty for auto-discovery
+  enclaveHost: ""
+  ## @param proxy.enclaveRepo Pin a specific enclave config repo (set with enclaveHost)
+  enclaveRepo: ""
+
+  ## @param proxy.disableHostCheck Disable Host header validation and DNS-rebinding
+  ## protection. Needed when a load balancer or ingress rewrites the Host header to
+  ## something the proxy does not allow, or when HTTP probes hit /healthz with a
+  ## pod-IP Host header. Trusted networks only.
+  disableHostCheck: false
+
+  ## @param proxy.allowedHosts [array] Additional Host header hostnames to allow.
+  ## Add the in-cluster service name(s) clients use to reach the proxy when a
+  ## reverse proxy in front of it forwards the client-facing Host header.
+  allowedHosts: []
+  #  - tinfoil-proxy.gateway-namespace.svc.cluster.local
+
+  ## @param proxy.logFormat Log format: text or json
+  logFormat: json
+
+  ## @param proxy.extraArgs [array] Extra arguments appended to the proxy command
+  extraArgs: []
+  #  - --verbose
+
+  ## @param proxy.userCacheSecret [object] Prompt-cache scoping secret. Provide a
+  ## stable value for multi-replica deployments so prompt-cache namespaces survive
+  ## replica restarts; omitted entirely when existingSecret is set.
+  userCacheSecret:
+    ## @param proxy.userCacheSecret.existingSecret Name of an existing Secret with a `user-cache-secret` key
+    existingSecret: ""
+
+## @section Healthchecks
+## Defaults use tcpSocket probes: the proxy only opens its listener after
+## enclave verification succeeds, so an accepted TCP connection is a
+## verified, serving proxy, and kubelet HTTP probes carry a pod-IP Host
+## header the DNS-rebinding guard rejects. Switch the HTTP probes on (and
+## set proxy.disableHostCheck) to verify attested-upstream state via /healthz
+## instead.
+healthcheck:
+  ## @param healthcheck.enabled Enable probes
+  enabled: true
+  ## @param healthcheck.type Probe type: tcp (listener is up) or http (/healthz reflects verified upstream)
+  type: tcp
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    successThreshold: 1
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 20
+    timeoutSeconds: 2
+    successThreshold: 1
+    failureThreshold: 3
+
+## @section Resources
+## @param resources Resource requests and limits per resourceTier. The tier
+## selects sizing; explicit values override.
+resources:
+  small:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  medium:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  large:
+    requests:
+      cpu: 200m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+  ## @param resources.override [object] Explicit requests/limits overriding the tier
+  override: {}
+
+## @section Deployment
+replicaCount: 3
+
+rollout:
+  ## @param rollout.enabled Enable rolling update strategy settings
+  enabled: true
+  ## @param rollout.maxUnavailable Maximum unavailable replicas during rolling update
+  maxUnavailable: 0
+  ## @param rollout.maxSurge Maximum surge replicas during rolling update
+  maxSurge: 25%
+
+podDisruptionBudget:
+  ## @param podDisruptionBudget.enabled Enable PodDisruptionBudget
+  enabled: true
+  ## @param podDisruptionBudget.maxUnavailable Maximum unavailable replicas (absolute or percentage)
+  maxUnavailable: 30%
+
+## @param terminationGracePeriodSeconds Termination grace period in seconds
+terminationGracePeriodSeconds: 120
+
+## @section Autoscaling
+## CPU-target HPA with a stabilization window so replicas scale down
+## slowly. The proxy is stateless; scaling is safe.
+## @param autoscaling.enabled Enable HPA. Requires metrics-server in the cluster.
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+## @section Security contexts
+## Hardened defaults: non-root, read-only root filesystem, all capabilities
+## dropped.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+## @section Service
+service:
+  ## @param service.type Service type
+  type: ClusterIP
+  ## @param service.port Service port
+  port: 3301
+  ## @param service.annotations Service annotations
+  annotations: {}
+  ## @param service.labels Service labels
+  labels: {}
+
+serviceAccount:
+  ## @param serviceAccount.create Create a dedicated service account
+  create: true
+  ## @param serviceAccount.name Service account name (defaults to chart fullname)
+  name: ""
+  ## @param serviceAccount.automountServiceAccountToken Automount API credentials into pods
+  automountServiceAccountToken: false
+  ## @param serviceAccount.annotations Service account annotations
+  annotations: {}
+  ## @param serviceAccount.labels Service account labels
+  labels: {}
+
+## @section NetworkPolicy
+## Opt-in. When enabled, ingress is denied unless the client is listed in
+## allowedIngressFrom, and egress is denied except DNS and the trusted
+## Tinfoil control and inference domains.
+##
+## Egress is FQDN-scoped where the CNI supports it. NetworkPolicy's built-in
+## ipBlock cannot match hostnames, so by default the chart allows 443 to the
+## Tinfoil-owned CIDRs listed in tinfoilCIDRs (resolve them before installing
+## in a strict environment) and to any domain listed in trustedDomains via
+## per-domain rules under networks.cilium.io policy annotations when
+## useFQDNEgress is enabled on a Cilium cluster. On a plain Calico/CNCF CNI,
+## set useFQDNEgress to false and rely on tinfoilCIDRs, or replace the
+## whole egress block with extraEgress.
+networkPolicy:
+  ## @param networkPolicy.enabled Create NetworkPolicies for the proxy pods
+  enabled: false
+  ingress:
+    ## @param networkPolicy.ingress.allowedIngressFrom [array] Ingress sources allowed to
+    ## reach the proxy. Omit podSelector to allow a whole namespace.
+    allowedIngressFrom: []
+    # - namespace: gateway
+    #   podSelector:
+    #     app.kubernetes.io/name: llm-gateway
+  egress:
+    ## @param networkPolicy.egress.useFQDNEgress Emit Cilium FQDN rules for trustedDomains instead of CIDR rules
+    useFQDNEgress: false
+    ## @param networkPolicy.egress.trustedDomains [array] Hostnames the proxy must reach over 443.
+    ## Defaults to the Tinfoil control plane (ATC discovery) and the current router fleet.
+    trustedDomains:
+      - atc.tinfoil.sh
+      - router-0.tinfoil.sh
+      - inference.tinfoil.sh
+    ## @param networkPolicy.egress.tinfoilCIDRs [array] IPv4 CIDRs of the trusted domains for clusters without FQDN egress support.
+    ## Resolve the trustedDomains addresses before installing; refresh when Tinfoil infrastructure changes.
+    tinfoilCIDRs: []
+    #  - 203.0.113.10/32
+    ## @param networkPolicy.egress.allowDNS [object] DNS egress. The proxy resolves the trusted domains at startup and on re-verification.
+    allowDNS: true
+    ## @param networkPolicy.egress.dnsServer Labels matched on kube-dns pods. Adjust if the cluster runs a different resolver.
+    dnsServer:
+      k8sAppLabel: kube-dns
+    ## @param networkPolicy.egress.allowNTP NTP egress. The verifier compares attestation freshness against the host clock; keep time in sync.
+    allowNTP: true
+    ## @param networkPolicy.egress.ntpPort NTP port.
+    ntpPort: 123
+    ## @param networkPolicy.egress.extraEgress [array] Raw egress rules appended verbatim.
+    extraEgress: []
