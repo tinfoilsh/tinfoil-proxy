@@ -72,7 +72,7 @@
         "enabled": { "type": "boolean" },
         "type": { "type": "string", "enum": ["tcp", "http"] },
         "readiness": { "$ref": "#/definitions/probe" },
-        "liveness": { "$ref": "#/definitions/probe" }
+        "liveness": { "$ref": "#/definitions/livenessProbe" }
       }
     },
     "resources": {
@@ -86,12 +86,36 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "minReplicas": { "type": "integer", "minimum": 1 },
-        "maxReplicas": { "type": "integer", "minimum": 1 }
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
       }
     },
     "networkPolicy": {
       "type": "object",
       "additionalProperties": true
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "override": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "requests": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "cpu": { "type": "string", "pattern": "^[0-9]+m?$" }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "definitions": {
@@ -103,6 +127,17 @@
         "periodSeconds": { "type": "integer", "minimum": 1 },
         "timeoutSeconds": { "type": "integer", "minimum": 1 },
         "successThreshold": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "livenessProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "successThreshold": { "type": "integer", "minimum": 1, "maximum": 1 },
         "failureThreshold": { "type": "integer", "minimum": 1 }
       }
     }

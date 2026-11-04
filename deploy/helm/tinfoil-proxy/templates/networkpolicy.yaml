@@ -14,6 +14,11 @@ spec:
       {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
   policyTypes:
     - Ingress
+  {{- if not .Values.networkPolicy.ingress.allowedIngressFrom }}
+  # An empty ingress list denies all ingress by design; an omitted field
+  # would fall back to the NetworkPolicy default and allow everything.
+  ingress: []
+  {{- else }}
   ingress:
     {{- range $source := .Values.networkPolicy.ingress.allowedIngressFrom }}
     - from:
@@ -32,6 +37,7 @@ spec:
               {{- toYaml $source.podSelector | nindent 14 }}
       {{- end }}
     {{- end }}
+  {{- end }}
 {{- if .Values.networkPolicy.egress.useFQDNEgress }}
 ---
 # FQDN egress requires Cilium. Standard NetworkPolicy cannot match hostnames;
@@ -51,6 +57,7 @@ spec:
     matchLabels:
       {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
   egress:
+{{- if .Values.networkPolicy.egress.allowDNS }}
     # DNS for the trusted domains; Cilium's FQDN policy learns the answers.
     - toEndpoints:
         - matchLabels:
@@ -63,6 +70,7 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
+{{- end }}
 {{- if .Values.networkPolicy.egress.allowNTP }}
     - toEntities:
         - world

@@ -445,6 +445,11 @@ jobs:
   # image, signed and attested the same way. Install with
   #   helm upgrade --install tinfoil-proxy oci://ghcr.io/tinfoilsh/charts/tinfoil-proxy --version <tag>
   # and verify origin with cosign against the repo's GitHub OIDC identity.
+  #
+  # Only first-party actions run here (checkout, attest); the tools are
+  # downloaded directly from their publishers and verified against pinned
+  # SHA-256 digests before use, so no third-party action code executes in
+  # the release environment.
   chart:
     name: Package & sign Helm chart
     needs:
@@ -458,45 +463,72 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    env:
+      # Helm publishes the sha256sum from get.helm.sh and signs it with the
+      # Helm release key; this is that published digest for v3.16.4.
+      HELM_SHA256: fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179
+      # GitHub computes and serves this asset digest for kubeconform v0.6.4.
+      KUBECONFORM_SHA256: 2b4ebeaa4d5ac4843cf8f7b7e66a8874252b6b71bc7cbfc4ef1cbf85acec7c07
+      # GitHub computes and serves this asset digest for cosign v2.5.3.
+      COSIGN_SHA256: 783b5d6c74105401c63946c68d9b2a4e1aab3c8abce043e06b8510b02b623ec9
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Set up Helm
-        uses: azure/setup-helm@1a18d586864ef6c2f1eefa900d5fabc1e05ff528 # v4.3.1
+      - name: Install pinned tools
+        run: |
+          set -euo pipefail
+          curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz -o /tmp/helm.tgz
+          echo "$HELM_SHA256  /tmp/helm.tgz" | sha256sum -c -
+          tar -xzf /tmp/helm.tgz -C /tmp linux-amd64/helm
+          mv /tmp/linux-amd64/helm /usr/local/bin/helm
+
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tgz
+          echo "$KUBECONFORM_SHA256  /tmp/kubeconform.tgz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tgz -C /tmp kubeconform
+          mv /tmp/kubeconform /usr/local/bin/kubeconform
+
+          curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.5.3/cosign-linux-amd64 -o /usr/local/bin/cosign
+          echo "$COSIGN_SHA256  /usr/local/bin/cosign" | sha256sum -c -
+          chmod +x /usr/local/bin/cosign
+          helm version --short
+          kubeconform -v
+          cosign version
 
       - name: Lint and validate chart
         run: |
           set -euo pipefail
           helm lint deploy/helm/tinfoil-proxy
           helm template tinfoil-proxy deploy/helm/tinfoil-proxy > /tmp/rendered.yaml
-          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz \
-            | tar -xz -C /tmp kubeconform
-          /tmp/kubeconform -strict -summary -kubernetes-version 1.31.0 /tmp/rendered.yaml
+          kubeconform -strict -summary -kubernetes-version 1.31.0 /tmp/rendered.yaml
 
       - name: Package chart
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          mkdir -p dist
           VERSION="${TAG#v}"
-          helm package deploy/helm/tinfoil-proxy --destination dist
+          mkdir -p dist
+          helm package deploy/helm/tinfoil-proxy --version "$VERSION" --app-version "$VERSION" --destination dist
           echo "chart=$(ls dist/*.tgz)" >> "$GITHUB_ENV"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # helm reads OCI credentials from its registry config; the token is
+          # scoped to this repository's packages by the job permissions.
+          mkdir -p "$HOME/.config/helm"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' "$ACTOR" "$GH_TOKEN" | base64 -w0)" \
+            > "$HOME/.config/helm/registry.json"
 
       - name: Push chart as OCI artifact
         id: push
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           PUSHED=$(helm push "$chart" oci://ghcr.io/tinfoilsh/charts 2>&1 | grep -oE 'sha256:[0-9a-f]{64}' | head -1)
@@ -507,11 +539,10 @@ jobs:
           echo "digest=$PUSHED" >> "$GITHUB_OUTPUT"
           echo "ref=ghcr.io/tinfoilsh/charts/tinfoil-proxy@${PUSHED}" >> "$GITHUB_OUTPUT"
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@dc452ac50283c901f7b24bd2253b783020c94099 # v4.0.0
-
       - name: Sign chart (keyless)
-        run: cosign sign --yes "${{ steps.push.outputs.ref }}"
+        env:
+          REF: ${{ steps.push.outputs.ref }}
+        run: cosign sign --yes "$REF"
 
       - name: Attest chart provenance (SLSA)
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
