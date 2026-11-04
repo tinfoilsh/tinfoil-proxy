@@ -75,10 +75,6 @@
         "liveness": { "$ref": "#/definitions/livenessProbe" }
       }
     },
-    "resources": {
-      "type": "object",
-      "additionalProperties": true
-    },
     "replicaCount": { "type": "integer", "minimum": 1 },
     "autoscaling": {
       "type": "object",

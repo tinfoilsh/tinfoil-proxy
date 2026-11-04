@@ -15,8 +15,8 @@ spec:
   policyTypes:
     - Ingress
   {{- if not .Values.networkPolicy.ingress.allowedIngressFrom }}
-  # An empty ingress list denies all ingress by design; an omitted field
-  # would fall back to the NetworkPolicy default and allow everything.
+  # With policyTypes: [Ingress] an omitted field is also default-deny;
+  # the empty list keeps the empty rule explicit and schema-valid.
   ingress: []
   {{- else }}
   ingress:

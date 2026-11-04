@@ -480,19 +480,21 @@ jobs:
       - name: Install pinned tools
         run: |
           set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
           curl -fsSL https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz -o /tmp/helm.tgz
           echo "$HELM_SHA256  /tmp/helm.tgz" | sha256sum -c -
           tar -xzf /tmp/helm.tgz -C /tmp linux-amd64/helm
-          mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          mv /tmp/linux-amd64/helm "$HOME/.local/bin/helm"
 
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tgz
           echo "$KUBECONFORM_SHA256  /tmp/kubeconform.tgz" | sha256sum -c -
           tar -xzf /tmp/kubeconform.tgz -C /tmp kubeconform
-          mv /tmp/kubeconform /usr/local/bin/kubeconform
+          mv /tmp/kubeconform "$HOME/.local/bin/kubeconform"
 
-          curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.5.3/cosign-linux-amd64 -o /usr/local/bin/cosign
-          echo "$COSIGN_SHA256  /usr/local/bin/cosign" | sha256sum -c -
-          chmod +x /usr/local/bin/cosign
+          curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.5.3/cosign-linux-amd64 -o "$HOME/.local/bin/cosign"
+          echo "$COSIGN_SHA256  $HOME/.local/bin/cosign" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/cosign"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           helm version --short
           kubeconform -v
           cosign version
@@ -520,12 +522,13 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          # helm reads OCI credentials from its registry config; the token is
-          # scoped to this repository's packages by the job permissions.
-          mkdir -p "$HOME/.config/helm"
-          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
-            "$(printf '%s:%s' "$ACTOR" "$GH_TOKEN" | base64 -w0)" \
-            > "$HOME/.config/helm/registry.json"
+          # helm reads OCI credentials from its registry config; cosign reads
+          # registry credentials from the Docker config. The token is scoped
+          # to this repository's packages by the job permissions.
+          AUTH="$(printf '%s:%s' "$ACTOR" "$GH_TOKEN" | base64 -w0)"
+          mkdir -p "$HOME/.config/helm/registry" "$HOME/.docker"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$AUTH" > "$HOME/.config/helm/registry/config.json"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$AUTH" > "$HOME/.docker/config.json"
 
       - name: Push chart as OCI artifact
         id: push
