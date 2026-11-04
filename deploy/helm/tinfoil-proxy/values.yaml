@@ -75,8 +75,10 @@ proxy:
   disableHostCheck: false
 
   ## @param proxy.allowedHosts [array] Additional Host header hostnames to allow.
-  ## Add the in-cluster service name(s) clients use to reach the proxy when a
-  ## reverse proxy in front of it forwards the client-facing Host header.
+  ## The template appends the chart's own service names (short and
+  ## namespace-qualified) automatically so in-cluster clients can reach the
+  ## proxy through the Service. Add more when a reverse proxy in front
+  ## forwards a different client-facing Host header.
   allowedHosts: []
   #  - tinfoil-proxy.gateway-namespace.svc.cluster.local
 

@@ -78,15 +78,21 @@ spec:
             {{- if .Values.proxy.disableHostCheck }}
             - --disable-host-check
             {{- end }}
-            {{- range .Values.proxy.allowedHosts }}
+            {{- $fullname := include "tinfoil-proxy.fullname" . }}
+            {{- $serviceHosts := list $fullname (printf "%s.%s.svc.cluster.local" $fullname .Release.Namespace) }}
+            {{- range concat .Values.proxy.allowedHosts $serviceHosts }}
             - --allowed-host
             - {{ . | quote }}
             {{- end }}
-            {{- if and .Values.proxy.enclaveHost .Values.proxy.enclaveRepo }}
+            {{- if or .Values.proxy.enclaveHost .Values.proxy.enclaveRepo }}
+            {{- if .Values.proxy.enclaveHost }}
             - --host
             - {{ .Values.proxy.enclaveHost | quote }}
+            {{- end }}
+            {{- if .Values.proxy.enclaveRepo }}
             - --repo
             - {{ .Values.proxy.enclaveRepo | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.proxy.userCacheSecret.existingSecret }}
             - --user-cache-secret
