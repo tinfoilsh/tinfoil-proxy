@@ -14,7 +14,8 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) EXPECTED_ASSET="tinfoil-proxy-darwin-arm64" ;;
   *) echo "Unsupported test platform" >&2; exit 1 ;;
 esac
-EXPECTED_BINARY_URL="https://github.com/tinfoilsh/tinfoil-proxy/releases/download/v0.2.9/$EXPECTED_ASSET"
+RELEASE_DOWNLOAD_URL="https://github.com/tinfoilsh/tinfoil-proxy/releases/download"
+EXPECTED_BINARY_URL="$RELEASE_DOWNLOAD_URL/v0.2.9/$EXPECTED_ASSET"
 export EXPECTED_BINARY_URL
 
 mkdir "$TEST_DIR/bin" "$TEST_DIR/install"
@@ -84,10 +85,18 @@ for VERSION in '' 0.2.9 v0.2.9; do
   done
 done
 
-for failure in corrupt missing-digest missing-asset invalid-digest invalid-json; do
+for failure in corrupt missing-digest missing-asset invalid-digest invalid-json redirected-download; do
   cp "$TEST_DIR/pretty.json" "$TEST_DIR/release.json"
   cp "$TEST_DIR/binary" "$TEST_DIR/download"
+  EXPECTED_BINARY_URL="$RELEASE_DOWNLOAD_URL/v0.2.9/$EXPECTED_ASSET"
   case "$failure" in
+    redirected-download)
+      # Downloaders collapse ".." segments, so this version would fetch the
+      # binary from another repository; serve it to prove the installer refuses.
+      REDIRECTED_VERSION="0.2.9/../../../../../attacker/proxy/releases/download/v0.2.9"
+      jq --arg tag "v$REDIRECTED_VERSION" '.tag_name = $tag' "$TEST_DIR/pretty.json" > "$TEST_DIR/release.json"
+      EXPECTED_BINARY_URL="$RELEASE_DOWNLOAD_URL/v$REDIRECTED_VERSION/$EXPECTED_ASSET"
+      ;;
     corrupt) printf 'corrupt download\n' > "$TEST_DIR/download" ;;
     missing-digest) jq '.assets[1].digest = null' "$TEST_DIR/pretty.json" > "$TEST_DIR/release.json" ;;
     missing-asset) jq 'del(.assets[1])' "$TEST_DIR/pretty.json" > "$TEST_DIR/release.json" ;;

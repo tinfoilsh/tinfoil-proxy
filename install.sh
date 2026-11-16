@@ -21,6 +21,7 @@ set -eu
 REPO="tinfoilsh/tinfoil-proxy"
 GITHUB_PROXY="https://github-proxy.tinfoil.sh"
 BIN_NAME="tinfoil-proxy"
+RELEASE_VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # Download $1 to $2 using curl or wget.
@@ -101,8 +102,10 @@ main() {
     exit 1
   fi
 
-  # The tag_name might be like "v0.2.6". We remove a leading "v".
-  if ! VERSION="$(jq -er '.tag_name | strings | ltrimstr("v") | select(length > 0)' "$TMPDIR/release.json")"; then
+  # The tag_name might be like "v0.2.6". We remove a leading "v". The version
+  # becomes part of the download URL, so only a plain version is accepted to
+  # keep the download inside this repository's releases.
+  if ! VERSION="$(jq -er --arg pattern "$RELEASE_VERSION_PATTERN" '.tag_name | strings | ltrimstr("v") | select(test($pattern))' "$TMPDIR/release.json")"; then
     echo "Error: Could not determine release version."
     exit 1
   fi
