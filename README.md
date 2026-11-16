@@ -8,8 +8,6 @@ The proxy is a single Go binary at the repository root. `app/` holds an optional
 
 ## Installation
 
-The install script requires `jq`.
-
 ```sh
 curl -fsSL https://github.com/tinfoilsh/tinfoil-proxy/raw/main/install.sh | sh
 ```
