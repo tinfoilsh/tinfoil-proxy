@@ -7,15 +7,17 @@ TEST_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 export TEST_DIR
 
-mkdir "$TEST_DIR/bin" "$TEST_DIR/install"
-cat > "$TEST_DIR/bin/uname" <<'EOF'
-#!/bin/sh
-case "$1" in
-  -s) echo Linux ;;
-  -m) echo x86_64 ;;
-  *) exit 1 ;;
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64|Linux-amd64) EXPECTED_ASSET="tinfoil-proxy-linux-amd64" ;;
+  Linux-aarch64|Linux-arm64) EXPECTED_ASSET="tinfoil-proxy-linux-arm64" ;;
+  Darwin-x86_64) EXPECTED_ASSET="tinfoil-proxy-darwin-amd64" ;;
+  Darwin-arm64) EXPECTED_ASSET="tinfoil-proxy-darwin-arm64" ;;
+  *) echo "Unsupported test platform" >&2; exit 1 ;;
 esac
-EOF
+EXPECTED_BINARY_URL="https://github.com/tinfoilsh/tinfoil-proxy/releases/download/v0.2.9/$EXPECTED_ASSET"
+export EXPECTED_BINARY_URL
+
+mkdir "$TEST_DIR/bin" "$TEST_DIR/install"
 cat > "$TEST_DIR/bin/curl" <<'EOF'
 #!/bin/sh
 set -eu
@@ -25,7 +27,7 @@ case "$2" in
   "$EXPECTED_METADATA_URL")
     cp "$TEST_DIR/release.json" "$4"
     ;;
-  https://github.com/tinfoilsh/tinfoil-proxy/releases/download/v0.2.9/tinfoil-proxy-linux-amd64)
+  "$EXPECTED_BINARY_URL")
     cp "$TEST_DIR/download" "$4"
     ;;
   *)
@@ -34,7 +36,7 @@ case "$2" in
     ;;
 esac
 EOF
-chmod +x "$TEST_DIR/bin/uname" "$TEST_DIR/bin/curl"
+chmod +x "$TEST_DIR/bin/curl"
 
 printf '#!/bin/sh\nexit 0\n' > "$TEST_DIR/binary"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -42,11 +44,11 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   DIGEST="$(shasum -a 256 "$TEST_DIR/binary" | cut -d ' ' -f 1)"
 fi
-jq -n --arg digest "sha256:$DIGEST" '{
+jq -n --arg asset "$EXPECTED_ASSET" --arg digest "sha256:$DIGEST" '{
   body: "Release notes containing \"tag_name\": \"v999\" and \"digest\": \"sha256:wrong\"",
   assets: [
     {name: "another-binary", digest: "sha256:wrong"},
-    {name: "tinfoil-proxy-linux-amd64", digest: $digest},
+    {name: $asset, digest: $digest},
     {name: "neighboring-binary", digest: $digest}
   ],
   tag_name: "v0.2.9"
