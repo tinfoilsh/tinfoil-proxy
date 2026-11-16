@@ -8,13 +8,15 @@ The proxy is a single Go binary at the repository root. `app/` holds an optional
 
 ## Installation
 
+The install script requires `jq`.
+
 ```sh
 curl -fsSL https://github.com/tinfoilsh/tinfoil-proxy/raw/main/install.sh | sh
 ```
 
 Or run `go install github.com/tinfoilsh/tinfoil-proxy@latest`, run `docker run --rm -p 127.0.0.1:3301:3301 ghcr.io/tinfoilsh/tinfoil-proxy`, or download a binary or desktop installer from the [releases page](https://github.com/tinfoilsh/tinfoil-proxy/releases/latest).
 
-The install script verifies the downloaded binary against the SHA-256 digest published by the GitHub release API, which is served independently of the release download CDN. For provenance, download an artifact and run `gh attestation verify` against the release workflow identity.
+The install script verifies the downloaded binary against the SHA-256 digest published by the GitHub release API, fetched through Tinfoil's GitHub proxy to avoid per-IP anonymous API rate limits and served independently of the release download CDN. For provenance, download an artifact and run `gh attestation verify` against the release workflow identity.
 
 ## Quick Start
 

@@ -4,10 +4,10 @@
 # binary, verifies it against the SHA-256 digest published by the GitHub
 # release API, and installs it to /usr/local/bin.
 #
-# The digest comes from api.github.com, an origin independent of the release
-# download CDN, so a compromised download path cannot substitute a different
-# binary. For provenance verification against the release workflow identity,
-# download the binary and verify its Sigstore attestation with
+# The digest comes from GitHub's API via Tinfoil's GitHub proxy, independently
+# of the release download CDN. A compromised download path cannot substitute
+# a different binary. For provenance verification against the release workflow
+# identity, download the binary and verify its Sigstore attestation with
 # `gh attestation verify` before installing.
 #
 # Usage: curl -fsSL https://github.com/tinfoilsh/tinfoil-proxy/raw/main/install.sh | sh
@@ -19,6 +19,7 @@
 set -eu
 
 REPO="tinfoilsh/tinfoil-proxy"
+GITHUB_PROXY="https://github-proxy.tinfoil.sh"
 BIN_NAME="tinfoil-proxy"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
@@ -38,6 +39,11 @@ download() {
 
 main() {
   echo "tinfoil-proxy install script"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: This installer requires jq. Install it with your package manager and try again."
+    exit 1
+  fi
 
   # -------------------------------
   # 1. Detect operating system
@@ -81,9 +87,9 @@ main() {
   # -------------------------------
   ASSET="${BIN_NAME}-${OS}-${ARCH}"
   if [ -n "${VERSION:-}" ]; then
-    API_URL="https://api.github.com/repos/${REPO}/releases/tags/v${VERSION#v}"
+    API_URL="${GITHUB_PROXY}/repos/${REPO}/releases/tags/v${VERSION#v}"
   else
-    API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+    API_URL="${GITHUB_PROXY}/repos/${REPO}/releases/latest"
   fi
 
   TMPDIR="$(mktemp -d)"
@@ -94,19 +100,18 @@ main() {
     echo "Error: Could not fetch release metadata."
     exit 1
   fi
-  RELEASE_JSON="$(cat "$TMPDIR/release.json")"
 
   # The tag_name might be like "v0.2.6". We remove a leading "v".
-  VERSION="$(printf '%s\n' "$RELEASE_JSON" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')"
-  if [ -z "$VERSION" ]; then
+  if ! VERSION="$(jq -er '.tag_name | strings | ltrimstr("v") | select(length > 0)' "$TMPDIR/release.json")"; then
     echo "Error: Could not determine release version."
     exit 1
   fi
   echo "Release version: $VERSION"
 
-  ASSETS_JSON="$(printf '%s\n' "$RELEASE_JSON" | sed -n '/"assets": \[/,/^  \],/p')"
-  EXPECTED_DIGEST="$(printf '%s\n' "$ASSETS_JSON" | grep -A 80 "\"name\": \"${ASSET}\"" | grep -m1 '"digest": "sha256:' | sed -E 's/.*sha256:([0-9a-f]{64}).*/\1/')"
-  if [ -z "$EXPECTED_DIGEST" ]; then
+  if ! EXPECTED_DIGEST="$(jq -er --arg asset "$ASSET" '
+    .assets[] | select(.name == $asset) | .digest | strings |
+    select(test("^sha256:[0-9a-f]{64}$")) | ltrimstr("sha256:")
+  ' "$TMPDIR/release.json")"; then
     echo "Error: No SHA-256 digest published for ${ASSET}."
     echo "The download was not installed."
     exit 1

@@ -9,6 +9,22 @@ on:
 permissions: {}
 
 jobs:
+  installer:
+    name: Installer regression tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Exercise installer
+        run: sh test/install.sh
+
   updater:
     name: Updater regression tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
