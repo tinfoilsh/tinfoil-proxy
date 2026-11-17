@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +33,7 @@ const (
 	handshakeTimeout       = 60 * time.Second
 	maxTokenUsageBodySize  = 8 << 20
 	upstreamReloadCooldown = 10 * time.Second
+	shutdownGracePeriod    = 100 * time.Second
 	verificationPath       = "/verification-document"
 )
 
@@ -166,6 +170,8 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle(verificationPath, verificationDocumentHandler(reloading))
+	var draining atomic.Bool
+	mux.Handle(healthzPath, healthzHandler(reloading, &draining))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	})
@@ -197,7 +203,35 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		IdleTimeout:       httpIdleTimeout,
 		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
-	return server.Serve(listener)
+	return serveUntilSignaled(server, listener, &draining)
+}
+
+// serveUntilSignaled serves until the listener fails or the process is asked
+// to stop. On the first SIGINT or SIGTERM it stops accepting connections,
+// reports unready, and lets in-flight requests finish for up to
+// shutdownGracePeriod; a second signal exits immediately.
+func serveUntilSignaled(server *http.Server, listener net.Listener, draining *atomic.Bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(listener) }()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+	}
+	stop()
+	draining.Store(true)
+	log.Info("shutting down, waiting for in-flight requests")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.WithError(err).Warn("in-flight requests did not finish before the shutdown deadline")
+		return server.Close()
+	}
+	return nil
 }
 
 func resolveTransportMode(value string) (tinfoil.TransportMode, error) {
@@ -353,6 +387,34 @@ func verificationDocumentHandler(reloading *reloadingUpstream) http.Handler {
 		if err := json.NewEncoder(w).Encode(verification); err != nil {
 			log.WithError(err).Warn("failed to write verification")
 		}
+	})
+}
+
+// healthzPath is a local-only readiness endpoint for process managers and
+// Kubernetes probes. It never proxies to the enclave.
+const healthzPath = "/healthz"
+
+// healthzHandler reports whether the proxy should receive traffic: 200 once
+// it holds a verified upstream, 503 before that and while it is shutting
+// down. It does not probe the upstream; an expired or failed verification is
+// re-established by the next forwarded request.
+func healthzHandler(reloading *reloadingUpstream, draining *atomic.Bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if draining.Load() {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		if reloading.verification() == nil {
+			http.Error(w, "verified upstream unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 }
 

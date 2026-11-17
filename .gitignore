@@ -5,3 +5,4 @@ dist/
 .DS_Store
 *.log
 app/resources/bin/
+/tinfoil-proxy
