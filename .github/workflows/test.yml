@@ -85,20 +85,36 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Lint and render
+      - name: Install kubeconform
+        env:
+          # GitHub computes and serves this asset digest for kubeconform v0.8.0.
+          KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tgz
+          echo "$KUBECONFORM_SHA256  /tmp/kubeconform.tgz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tgz -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Lint, render, and validate
         run: |
           set -euo pipefail
           CHART=deploy/helm/tinfoil-proxy
           helm lint "$CHART"
-          helm template tinfoil-proxy "$CHART" > /dev/null
+          helm template tinfoil-proxy "$CHART" > /tmp/default.yaml
           helm template tinfoil-proxy "$CHART" \
             --set healthcheck.type=http \
+            --set proxy.userCacheSecret.existingSecret=cache-secret \
             --set networkPolicy.enabled=true \
             --set 'networkPolicy.egress.tinfoilCIDRs={203.0.113.10/32}' \
-            --set-json 'networkPolicy.ingress.allowedIngressFrom=[{"namespace":"gateway"}]' > /dev/null
+            --set-json 'networkPolicy.ingress.allowedIngressFrom=[{"namespace":"gateway"}]' > /tmp/restricted.yaml
           helm template tinfoil-proxy "$CHART" \
             --set networkPolicy.enabled=true \
-            --set networkPolicy.egress.useFQDNEgress=true > /dev/null
+            --set networkPolicy.egress.useFQDNEgress=true > /tmp/cilium.yaml
+          # The Cilium policy is a custom resource with no bundled schema.
+          kubeconform -strict -summary -kubernetes-version 1.31.0 -skip CiliumNetworkPolicy \
+            /tmp/default.yaml /tmp/restricted.yaml /tmp/cilium.yaml
 
       - name: Refuse unsafe network policies
         run: |
