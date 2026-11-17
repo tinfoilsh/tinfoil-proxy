@@ -313,7 +313,7 @@ type upstream struct {
 // (see setReplayableBody).
 func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.TransportMode, cacheSecret string) (*upstream, error) {
 	ctx := context.Background()
-	if requestedEnclave != "" || requestedRepo != "" {
+	if requestedEnclave != "" || (requestedRepo != "" && requestedRepo != defaultEnclaveRepo) {
 		if requestedRepo == "" {
 			requestedRepo = defaultEnclaveRepo
 		}
