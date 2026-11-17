@@ -108,7 +108,8 @@ jobs:
             --set proxy.userCacheSecret.existingSecret=cache-secret \
             --set networkPolicy.enabled=true \
             --set 'networkPolicy.egress.tinfoilCIDRs={203.0.113.10/32}' \
-            --set-json 'networkPolicy.ingress.allowedIngressFrom=[{"namespace":"gateway"}]' > /tmp/restricted.yaml
+            --set-json 'networkPolicy.ingress.allowedIngressFrom=[{"namespace":"gateway"}]' \
+            --set-json 'networkPolicy.egress.extraEgress=[{"to":[{"ipBlock":{"cidr":"198.51.100.0/24"}}],"ports":[{"protocol":"TCP","port":443}]}]' > /tmp/restricted.yaml
           helm template tinfoil-proxy "$CHART" \
             --set networkPolicy.enabled=true \
             --set networkPolicy.egress.useFQDNEgress=true > /tmp/cilium.yaml

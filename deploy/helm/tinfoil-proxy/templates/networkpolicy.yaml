@@ -135,7 +135,7 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
-    {{- range .Values.networkPolicy.egress.extraEgress }}
+    {{- with .Values.networkPolicy.egress.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 {{- end }}
