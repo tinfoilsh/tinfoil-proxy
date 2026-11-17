@@ -32,6 +32,7 @@ const (
 	httpMaxHeaderBytes     = 1 << 20
 	handshakeTimeout       = 60 * time.Second
 	maxTokenUsageBodySize  = 8 << 20
+	maxReplayableBodySize  = maxTokenUsageBodySize
 	upstreamReloadCooldown = 10 * time.Second
 	shutdownGracePeriod    = 100 * time.Second
 	verificationPath       = "/verification-document"
@@ -152,7 +153,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		tokens = newTokenCounter(emitTokenStats)
 	}
 
-	proxy := newReverseProxy(reloading, cacheSecret, tokens)
+	proxy := newReverseProxy(reloading, tokens)
 
 	addr := bindAddress()
 	listener, err := net.Listen("tcp", addr)
@@ -252,14 +253,10 @@ func listenerGuardAddress(configuredAddr, listenAddr string) string {
 }
 
 // newReverseProxy assembles the forwarding pipeline. The logging transport
-// wraps the cache-secret injector, which wraps the reloading upstream, so the
-// injected field survives router-reselection retries and is sealed by the
-// pinned connection beneath before it leaves the machine.
-func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *tokenCounter) *httputil.ReverseProxy {
-	var transport http.RoundTripper = reloading
-	if cacheSecret != "" {
-		transport = &userCacheSecretTransport{secret: cacheSecret, transport: transport}
-	}
+// wraps the replay buffer, which wraps the reloading upstream, so a buffered
+// body survives router-reselection retries and the SDK's retry after a key
+// rotation.
+func newReverseProxy(reloading *reloadingUpstream, tokens *tokenCounter) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = "https"
@@ -275,7 +272,7 @@ func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *t
 			// client's address, and drops any value the client supplied.
 			req.Header["X-Forwarded-For"] = nil
 		},
-		Transport: withLoggingTransport(log.StandardLogger(), transport, tokens),
+		Transport: withLoggingTransport(log.StandardLogger(), &replayableBodyTransport{transport: reloading}, tokens),
 		ModifyResponse: func(resp *http.Response) error {
 			// EHBP can pass through unauthenticated outer redirects. A local
 			// client following one would leave this proxy's verified path and
@@ -288,6 +285,47 @@ func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *t
 			return nil
 		},
 	}
+}
+
+// replayableBodyTransport buffers request bodies of a known size up to
+// maxReplayableBodySize so the layers beneath can send them again: inbound
+// server requests never carry GetBody. Larger and unsized bodies stream
+// through unbuffered and cannot be retried.
+type replayableBodyTransport struct {
+	transport http.RoundTripper
+}
+
+func (t *replayableBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body == nil || req.Body == http.NoBody || req.GetBody != nil ||
+		req.ContentLength <= 0 || req.ContentLength > maxReplayableBodySize {
+		return t.transport.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := req.Clone(req.Context())
+	setReplayableBody(out, body)
+	return t.transport.RoundTrip(out)
+}
+
+func setReplayableBody(req *http.Request, body []byte) {
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+}
+
+// decodeConsumedAll reports whether dec has nothing left but trailing
+// whitespace: a follow-up Token read returns io.EOF only at true end of
+// input. dec.More() is not enough here — it reports "no more elements" at a
+// trailing '}' or ']', so a malformed body like `{...}}` would be
+// re-marshaled without its trailing bytes and a request the router rejects
+// would quietly become one it accepts.
+func decodeConsumedAll(dec *json.Decoder) bool {
+	_, err := dec.Token()
+	return err == io.EOF
 }
 
 type upstream struct {
@@ -312,10 +350,9 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 		if requestedRepo == "" {
 			requestedRepo = defaultEnclaveRepo
 		}
-		// The proxy's own transport adds the cache secret for an explicit
-		// enclave, so the SDK layer stays off.
 		client, err := tinfoil.NewEnclaveHTTPClient(ctx, requestedEnclave, requestedRepo, &tinfoil.EnclaveOptions{
-			TransportMode: mode,
+			TransportMode:   mode,
+			UserCacheSecret: cacheSecret,
 		})
 		if err != nil {
 			return nil, err
@@ -330,8 +367,6 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 			},
 		}, nil
 	}
-	// The router client always scopes the prompt cache; give it the proxy's
-	// secret so it never substitutes a process-local one.
 	client, err := tinfoil.NewRouterHTTPClient(ctx, &tinfoil.RouterOptions{
 		TransportMode:   mode,
 		UserCacheSecret: cacheSecret,

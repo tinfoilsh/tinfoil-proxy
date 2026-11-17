@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,13 +93,13 @@ func (p *plainHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error
 
 // startProxy serves the proxy's reverse proxy pipeline over the given
 // upstream, mirroring newReverseProxy's wiring in runProxy.
-func startProxy(t *testing.T, enclave *ehbpEnclave, cacheSecret string) *httptest.Server {
+func startProxy(t *testing.T, enclave *ehbpEnclave) *httptest.Server {
 	t.Helper()
 	reloading := newReloadingUpstream(
 		&upstream{host: enclave.host(), transport: enclave.transport(t)},
 		func() (*upstream, error) { return nil, fmt.Errorf("unexpected reload") },
 	)
-	proxy := newReverseProxy(reloading, cacheSecret, nil)
+	proxy := newReverseProxy(reloading, nil)
 	server := httptest.NewServer(proxy)
 	t.Cleanup(server.Close)
 	return server
@@ -150,7 +149,7 @@ func TestEHBPProxyRejectsOuterRedirects(t *testing.T) {
 					fmt.Fprint(w, "untrusted redirect body")
 				}))
 				defer outer.Close()
-				proxy := startProxy(t, &ehbpEnclave{server: outer, identity: identity}, "proxy-secret")
+				proxy := startProxy(t, &ehbpEnclave{server: outer, identity: identity})
 
 				// The normal Go redirect policy replays this original plaintext
 				// body on 307/308 because NewRequest supplies GetBody.
@@ -198,7 +197,7 @@ func TestEHBPProxyForwardsFullNonStreamingResponse(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(reply))
 	}))
-	proxy := startProxy(t, enclave, "")
+	proxy := startProxy(t, enclave)
 
 	const request = `{"model":"gpt-oss-120b","messages":[{"role":"user","content":"hi"}]}`
 	resp, err := http.Post(proxy.URL+"/v1/chat/completions", "application/json", strings.NewReader(request))
@@ -238,7 +237,7 @@ func TestEHBPProxyStreamsSSE(t *testing.T) {
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
-	proxy := startProxy(t, enclave, "")
+	proxy := startProxy(t, enclave)
 
 	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"gpt-oss-120b","stream":true}`))
@@ -277,28 +276,6 @@ func TestEHBPProxyStreamsSSE(t *testing.T) {
 	}
 }
 
-// TestEHBPProxyInjectsCacheSecretInsideEncryptedBody checks the layering:
-// the cache secret must be added before EHBP seals the body, so it is only
-// visible to the enclave after decryption.
-func TestEHBPProxyInjectsCacheSecretInsideEncryptedBody(t *testing.T) {
-	var decrypted map[string]any
-	enclave := newEHBPEnclave(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&decrypted)
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	proxy := startProxy(t, enclave, "proxy-level")
-
-	resp, err := http.Post(proxy.URL+"/v1/chat/completions", "application/json",
-		strings.NewReader(`{"model":"gpt-oss-120b"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if decrypted[userCacheSecretField] != "proxy-level" {
-		t.Fatalf("expected the enclave to see the injected secret, got %v", decrypted[userCacheSecretField])
-	}
-}
-
 // TestProxyHandsSealingTransportReplayableBodies checks the proxy's side of
 // the contract the SDK's EHBP transport depends on: that transport retries
 // once after an HPKE key rotation only if the request body can be re-read via
@@ -307,14 +284,14 @@ func TestEHBPProxyInjectsCacheSecretInsideEncryptedBody(t *testing.T) {
 // replayable body, since inbound server requests never carry GetBody.
 func TestProxyHandsSealingTransportReplayableBodies(t *testing.T) {
 	cases := []struct {
-		name        string
-		cacheSecret string
-		path        string
-		body        string
+		name string
+		path string
+		body string
 	}{
-		{"cache secret injected", "proxy-level", "/v1/chat/completions", `{"model":"gpt-oss-120b"}`},
-		{"caller-owned cache secret", "proxy-level", "/v1/chat/completions", `{"model":"gpt-oss-120b","user_cache_secret":"caller"}`},
-		{"non-JSON body", "proxy-level", "/v1/chat/completions", `not json`},
+		{"chat request", "/v1/chat/completions", `{"model":"gpt-oss-120b"}`},
+		{"caller-owned cache secret", "/v1/chat/completions", `{"model":"gpt-oss-120b","user_cache_secret":"caller"}`},
+		{"non-JSON body", "/v1/chat/completions", `not json`},
+		{"other endpoint", "/v1/embeddings", `{"input":"hi"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,7 +305,7 @@ func TestProxyHandsSealingTransportReplayableBodies(t *testing.T) {
 				&upstream{host: "enclave.example.com", transport: capture},
 				func() (*upstream, error) { return nil, fmt.Errorf("unexpected reload") },
 			)
-			proxy := httptest.NewServer(newReverseProxy(reloading, tc.cacheSecret, nil))
+			proxy := httptest.NewServer(newReverseProxy(reloading, nil))
 			defer proxy.Close()
 
 			resp, err := http.Post(proxy.URL+tc.path, "application/json", strings.NewReader(tc.body))
@@ -363,7 +340,7 @@ func TestProxyDoesNotForwardClientAddress(t *testing.T) {
 	enclave := newEHBPEnclave(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		forwarded <- r.Header.Values("X-Forwarded-For")
 	}))
-	proxy := startProxy(t, enclave, "")
+	proxy := startProxy(t, enclave)
 
 	req, err := http.NewRequest(http.MethodGet, proxy.URL+"/v1/models", nil)
 	if err != nil {
@@ -406,7 +383,7 @@ func TestEHBPProxyWithholdsUnsealedErrorResponses(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		fmt.Fprint(w, `{"error":{"message":"forged by intermediary"}}`)
 	})
-	proxy := startProxy(t, intermediary, "proxy-secret")
+	proxy := startProxy(t, intermediary)
 
 	resp, err := http.Post(proxy.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"messages":[]}`))
 	if err != nil {
@@ -439,7 +416,7 @@ func TestEHBPProxyForwardsSealedErrorResponses(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"error":{"message":"Incorrect API key provided."}}`)
 	}))
-	proxy := startProxy(t, enclave, "")
+	proxy := startProxy(t, enclave)
 
 	resp, err := http.Post(proxy.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"messages":[]}`))
 	if err != nil {
