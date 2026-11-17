@@ -127,7 +127,8 @@ func TestReverseProxyPreservesNonRedirectResponses(t *testing.T) {
 func TestVerificationDocumentHandler(t *testing.T) {
 	verification := &verificationSummary{
 		Enclave:           "router.tinfoil.sh",
-		Repo:              "tinfoilsh/confidential-model-router",
+		Repo:              "tinfoilsh/cvmimage",
+		Project:           "tinfoilsh/confidential-model-router",
 		ReleaseTag:        "v1.0.0",
 		ReleaseDigest:     "digest-1",
 		Platform:          platformSEVSNP,
@@ -159,7 +160,8 @@ func TestVerificationDocumentHandler(t *testing.T) {
 	}
 	expected := map[string]string{
 		"enclave":             "router.tinfoil.sh",
-		"repo":                "tinfoilsh/confidential-model-router",
+		"repo":                "tinfoilsh/cvmimage",
+		"project":             "tinfoilsh/confidential-model-router",
 		"release_tag":         "v1.0.0",
 		"release_digest":      "digest-1",
 		"platform":            platformSEVSNP,
@@ -169,6 +171,39 @@ func TestVerificationDocumentHandler(t *testing.T) {
 	}
 	if !maps.Equal(response, expected) {
 		t.Fatalf("expected the active verification %v, got %v", expected, response)
+	}
+}
+
+func TestEnclavePinKeepsRepoAndProjectSeparate(t *testing.T) {
+	router := tinfoil.Pin{Repo: defaultEnclaveRepo, Project: defaultEnclaveRepo}
+	cases := []struct {
+		name        string
+		host        string
+		requested   tinfoil.Pin
+		wantEnclave bool
+		wantPin     tinfoil.Pin
+	}{
+		{name: "no flags", wantEnclave: false},
+		{name: "router repo only", requested: tinfoil.Pin{Repo: defaultEnclaveRepo}, wantEnclave: false},
+		{name: "host only", host: "enclave.example.com", wantEnclave: true, wantPin: router},
+		{name: "repo", host: "enclave.example.com", requested: tinfoil.Pin{Repo: "example/model"}, wantEnclave: true, wantPin: tinfoil.Pin{Repo: "example/model"}},
+		{name: "router repo with host", host: "enclave.example.com", requested: tinfoil.Pin{Repo: defaultEnclaveRepo}, wantEnclave: true, wantPin: tinfoil.Pin{Repo: defaultEnclaveRepo}},
+		{name: "project", host: "enclave.example.com", requested: tinfoil.Pin{Project: "example/model"}, wantEnclave: true, wantPin: tinfoil.Pin{Project: "example/model"}},
+		{name: "router project without host", requested: tinfoil.Pin{Project: defaultEnclaveRepo}, wantEnclave: true, wantPin: tinfoil.Pin{Project: defaultEnclaveRepo}},
+		{name: "repo and project", host: "enclave.example.com", requested: tinfoil.Pin{Repo: "example/model", Project: "example/registry-model"}, wantEnclave: true, wantPin: tinfoil.Pin{Repo: "example/model", Project: "example/registry-model"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := selectsEnclave(tc.host, tc.requested); got != tc.wantEnclave {
+				t.Fatalf("selectsEnclave = %v, want %v", got, tc.wantEnclave)
+			}
+			if !tc.wantEnclave {
+				return
+			}
+			if got := enclavePin(tc.requested); got != tc.wantPin {
+				t.Fatalf("enclavePin = %+v, want %+v", got, tc.wantPin)
+			}
+		})
 	}
 }
 

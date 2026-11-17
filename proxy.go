@@ -125,6 +125,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	log.WithFields(log.Fields{
 		"enclave_host": enclaveHost,
 		"repo":         repo,
+		"project":      project,
 		"transport":    transportMode,
 	}).Info("initializing secure client")
 
@@ -134,18 +135,18 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 	cacheSecret := resolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
 
-	requestedEnclave, requestedRepo := enclaveHost, repo
-	initial, err := buildUpstream(requestedEnclave, requestedRepo, mode, cacheSecret)
+	requestedEnclave, requestedPin := enclaveHost, tinfoil.Pin{Repo: repo, Project: project}
+	initial, err := buildUpstream(requestedEnclave, requestedPin, mode, cacheSecret)
 	if err != nil {
 		log.WithError(err).Error("failed to create HTTP client")
 		return err
 	}
 	enclaveHost = initial.host
-	repo = initial.repo
+	repo, project = initial.pin.Repo, initial.pin.Project
 	log.Debug("secure HTTP client created successfully")
 
 	reloading := newReloadingUpstream(initial, func() (*upstream, error) {
-		return buildUpstream(requestedEnclave, requestedRepo, mode, cacheSecret)
+		return buildUpstream(requestedEnclave, requestedPin, mode, cacheSecret)
 	})
 
 	var tokens *tokenCounter
@@ -330,7 +331,7 @@ func decodeConsumedAll(dec *json.Decoder) bool {
 
 type upstream struct {
 	host         string
-	repo         string
+	pin          tinfoil.Pin
 	transport    http.RoundTripper
 	verification func() *verificationSummary
 }
@@ -344,13 +345,10 @@ type upstream struct {
 // response bodies are sealed to the attested HPKE key, and the SDK retries
 // once after a key rotation, which relies on request bodies being replayable
 // (see setReplayableBody).
-func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.TransportMode, cacheSecret string) (*upstream, error) {
+func buildUpstream(requestedEnclave string, requestedPin tinfoil.Pin, mode tinfoil.TransportMode, cacheSecret string) (*upstream, error) {
 	ctx := context.Background()
-	if requestedEnclave != "" || (requestedRepo != "" && requestedRepo != defaultEnclaveRepo) {
-		if requestedRepo == "" {
-			requestedRepo = defaultEnclaveRepo
-		}
-		client, err := tinfoil.NewEnclaveHTTPClient(ctx, requestedEnclave, requestedRepo, &tinfoil.EnclaveOptions{
+	if selectsEnclave(requestedEnclave, requestedPin) {
+		client, err := tinfoil.NewEnclaveHTTPClient(ctx, requestedEnclave, enclavePin(requestedPin), &tinfoil.EnclaveOptions{
 			TransportMode:   mode,
 			UserCacheSecret: cacheSecret,
 		})
@@ -360,7 +358,7 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 		host := client.Enclave()
 		return &upstream{
 			host:      host,
-			repo:      client.Repo(),
+			pin:       client.Pin(),
 			transport: upstreamTransport(client.Transport, mode),
 			verification: func() *verificationSummary {
 				return newVerificationSummary(host, client.Current())
@@ -377,12 +375,33 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 	host := client.Enclave()
 	return &upstream{
 		host:      host,
-		repo:      client.Repo(),
+		pin:       client.Pin(),
 		transport: upstreamTransport(client.Transport, mode),
 		verification: func() *verificationSummary {
 			return newVerificationSummary(host, client.Current())
 		},
 	}, nil
+}
+
+// selectsEnclave reports whether the flags name a specific enclave instead of
+// the router the SDK discovers. Naming only the router's own repository still
+// selects the discovered router.
+func selectsEnclave(requestedEnclave string, requestedPin tinfoil.Pin) bool {
+	if requestedEnclave != "" || requestedPin.Project != "" {
+		return true
+	}
+	return requestedPin.Repo != "" && requestedPin.Repo != defaultEnclaveRepo
+}
+
+// enclavePin is the pin a specific enclave is verified against. Repo names a
+// GitHub repository and Project a config registry project; neither stands in
+// for the other.
+func enclavePin(requestedPin tinfoil.Pin) tinfoil.Pin {
+	if requestedPin != (tinfoil.Pin{}) {
+		return requestedPin
+	}
+	// Tinfoil owns the router's name in both namespaces.
+	return tinfoil.Pin{Repo: defaultEnclaveRepo, Project: defaultEnclaveRepo}
 }
 
 // upstreamTransport adds the proxy's own checks around the SDK transport. TLS

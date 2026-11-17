@@ -18,6 +18,7 @@ const (
 type verificationSummary struct {
 	Enclave           string `json:"enclave"`
 	Repo              string `json:"repo"`
+	Project           string `json:"project"`
 	ReleaseTag        string `json:"release_tag"`
 	ReleaseDigest     string `json:"release_digest"`
 	Platform          string `json:"platform"`
@@ -31,9 +32,13 @@ func newVerificationSummary(enclave string, verification *verify.Verification) *
 		return nil
 	}
 	fingerprint, _ := verification.TLSPublicKeyFP()
+	// A config registry project is reported apart from the GitHub repository
+	// of the code or runtime it runs.
+	config, _ := verification.Config()
 	return &verificationSummary{
 		Enclave:           enclave,
 		Repo:              verification.ConfigRepo(),
+		Project:           config.Name,
 		ReleaseTag:        verification.CodeTag(),
 		ReleaseDigest:     verification.CodeDigest(),
 		Platform:          platformName(verification.EnclaveMeasurement()),

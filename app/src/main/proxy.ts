@@ -18,6 +18,7 @@ type CliProcess = ChildProcessByStdio<Writable, Readable, Readable>
 const verificationSchema = z.object({
   enclave: z.string().min(1),
   repo: z.string().min(1),
+  project: z.string(),
   release_tag: z.string(),
   release_digest: z.string().min(1),
   platform: z.string().min(1),
@@ -230,6 +231,7 @@ export async function startProxy(
   }) as CliProcess
   const logSink = { stderrTail: '' }
   let acceptedRepo: string | undefined
+  let acceptedProject: string | undefined
 
   setProxyState({
     enabled: true,
@@ -292,7 +294,10 @@ export async function startProxy(
       }
       if (message.event === 'verification') {
         if (child !== proc || proc.exitCode !== null || !acceptedRepo) return
-        if (message.verification.repo !== acceptedRepo) {
+        if (
+          message.verification.repo !== acceptedRepo ||
+          message.verification.project !== acceptedProject
+        ) {
           setProxyState({
             verified: false,
             lastError: 'Updated verification does not match the running proxy'
@@ -390,6 +395,7 @@ export async function startProxy(
 
   // The desktop app ships and trusts this proxy binary as its verifier.
   acceptedRepo = ready.verification.repo
+  acceptedProject = ready.verification.project
   sendSignal(proc, 'go')
   setProxyState({
     running: true,
