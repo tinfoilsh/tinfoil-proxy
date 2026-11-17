@@ -47,6 +47,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.Version = proxyVersion()
 	rootCmd.Flags().StringVarP(&enclaveHost, "host", "e", "", "Enclave hostname")
 	rootCmd.Flags().StringVarP(&repo, "repo", "r", "", "Enclave config repo")
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")

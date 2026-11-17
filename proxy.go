@@ -4,9 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,34 +30,18 @@ const (
 	handshakeTimeout       = 60 * time.Second
 	maxTokenUsageBodySize  = 8 << 20
 	upstreamReloadCooldown = 10 * time.Second
-	proxyInstanceIDBytes   = 16
 	verificationPath       = "/verification-document"
-	proxySoftwareName      = "tinfoil-proxy"
 )
 
 type readyMessage struct {
-	Event                string                     `json:"event"`
-	InstanceID           string                     `json:"instance_id"`
-	Enclave              string                     `json:"enclave"`
-	Repo                 string                     `json:"repo"`
-	Listen               string                     `json:"listen"`
-	VerificationDocument *proxyVerificationDocument `json:"verification_document"`
-}
-
-type proxyRuntime struct {
-	InstanceID string           `json:"instanceId"`
-	Listener   string           `json:"listener"`
-	Software   softwareIdentity `json:"software"`
-}
-
-type proxyVerificationDocument struct {
-	*VerifiedDocument
-	Runtime proxyRuntime `json:"runtime"`
+	Event        string               `json:"event"`
+	Listen       string               `json:"listen"`
+	Verification *verificationSummary `json:"verification"`
 }
 
 type verificationMessage struct {
-	Event                string                     `json:"event"`
-	VerificationDocument *proxyVerificationDocument `json:"verification_document"`
+	Event        string               `json:"event"`
+	Verification *verificationSummary `json:"verification"`
 }
 
 type tokenStatsMessage struct {
@@ -87,22 +68,18 @@ func emitJSONLine(msg any) error {
 	return nil
 }
 
-func emitReady(instanceID, enclave, repo, listen string, document *proxyVerificationDocument) error {
-	msg := readyMessage{
-		Event:                "ready",
-		InstanceID:           instanceID,
-		Enclave:              enclave,
-		Repo:                 repo,
-		Listen:               listen,
-		VerificationDocument: document,
-	}
-	return emitJSONLine(msg)
+func emitReady(listen string, verification *verificationSummary) error {
+	return emitJSONLine(readyMessage{
+		Event:        "ready",
+		Listen:       listen,
+		Verification: verification,
+	})
 }
 
-func emitVerification(document *proxyVerificationDocument) error {
+func emitVerification(verification *verificationSummary) error {
 	return emitJSONLine(verificationMessage{
-		Event:                "verification",
-		VerificationDocument: document,
+		Event:        "verification",
+		Verification: verification,
 	})
 }
 
@@ -180,42 +157,26 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	listenAddr := listener.Addr().String()
-	instanceID, err := newProxyInstanceID()
-	if err != nil {
-		listener.Close()
-		return err
-	}
-	runtime := proxyRuntime{
-		InstanceID: instanceID,
-		Listener:   listenAddr,
-		Software: softwareIdentity{
-			Name:    proxySoftwareName,
-			Version: proxyVersion(),
-		},
-	}
 	if handshake {
-		reloading.onVerificationChange = func(document *VerifiedDocument) {
-			if err := emitVerification(&proxyVerificationDocument{
-				VerifiedDocument: document,
-				Runtime:          runtime,
-			}); err != nil {
-				log.WithError(err).Warn("failed to emit updated verification document")
+		reloading.onVerificationChange = func(verification *verificationSummary) {
+			if err := emitVerification(verification); err != nil {
+				log.WithError(err).Warn("failed to emit updated verification")
 			}
 		}
 	}
 	mux := http.NewServeMux()
-	mux.Handle(verificationPath, verificationDocumentHandler(reloading, runtime))
+	mux.Handle(verificationPath, verificationDocumentHandler(reloading))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	})
 
 	if handshake {
-		document, ok := currentVerificationDocument(reloading, runtime)
-		if !ok {
+		verification := reloading.verification()
+		if verification == nil {
 			listener.Close()
-			return errors.New("verification document unavailable after successful verification")
+			return errors.New("verification unavailable after successful verification")
 		}
-		if err := emitReady(instanceID, enclaveHost, repo, listenAddr, document); err != nil {
+		if err := emitReady(listenAddr, verification); err != nil {
 			listener.Close()
 			return err
 		}
@@ -296,10 +257,10 @@ func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *t
 }
 
 type upstream struct {
-	host                 string
-	repo                 string
-	transport            http.RoundTripper
-	verificationDocument func() *VerifiedDocument
+	host         string
+	repo         string
+	transport    http.RoundTripper
+	verification func() *verificationSummary
 }
 
 // buildUpstream verifies and pins a router. When no enclave host is pinned via
@@ -330,8 +291,8 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 			host:      host,
 			repo:      client.Repo(),
 			transport: upstreamTransport(client.Transport, mode),
-			verificationDocument: func() *VerifiedDocument {
-				return newVerifiedDocument(host, client.Current())
+			verification: func() *verificationSummary {
+				return newVerificationSummary(host, client.Current())
 			},
 		}, nil
 	}
@@ -349,8 +310,8 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 		host:      host,
 		repo:      client.Repo(),
 		transport: upstreamTransport(client.Transport, mode),
-		verificationDocument: func() *VerifiedDocument {
-			return newVerifiedDocument(host, client.Current())
+		verification: func() *verificationSummary {
+			return newVerificationSummary(host, client.Current())
 		},
 	}, nil
 }
@@ -365,14 +326,6 @@ func upstreamTransport(transport http.RoundTripper, mode tinfoil.TransportMode) 
 	return transport
 }
 
-func newProxyInstanceID() (string, error) {
-	id := make([]byte, proxyInstanceIDBytes)
-	if _, err := rand.Read(id); err != nil {
-		return "", fmt.Errorf("generate proxy instance ID: %w", err)
-	}
-	return hex.EncodeToString(id), nil
-}
-
 func proxyVersion() string {
 	if buildVersion != "unknown" {
 		return strings.TrimPrefix(buildVersion, "v")
@@ -383,7 +336,7 @@ func proxyVersion() string {
 	return "devel"
 }
 
-func verificationDocumentHandler(reloading *reloadingUpstream, runtime proxyRuntime) http.Handler {
+func verificationDocumentHandler(reloading *reloadingUpstream) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet {
@@ -391,31 +344,26 @@ func verificationDocumentHandler(reloading *reloadingUpstream, runtime proxyRunt
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		document, ok := currentVerificationDocument(reloading, runtime)
-		if !ok {
-			http.Error(w, "verification document unavailable", http.StatusServiceUnavailable)
+		verification := reloading.verification()
+		if verification == nil {
+			http.Error(w, "verification unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(document); err != nil {
-			log.WithError(err).Warn("failed to write verification document")
+		if err := json.NewEncoder(w).Encode(verification); err != nil {
+			log.WithError(err).Warn("failed to write verification")
 		}
 	})
 }
 
-func currentVerificationDocument(reloading *reloadingUpstream, runtime proxyRuntime) (*proxyVerificationDocument, bool) {
-	current := reloading.get()
-	if current.verificationDocument == nil {
-		return nil, false
+// verification returns the current upstream's verification, or nil before one
+// exists.
+func (r *reloadingUpstream) verification() *verificationSummary {
+	current := r.get()
+	if current.verification == nil {
+		return nil
 	}
-	document := current.verificationDocument()
-	if document == nil {
-		return nil, false
-	}
-	return &proxyVerificationDocument{
-		VerifiedDocument: document,
-		Runtime:          runtime,
-	}, true
+	return current.verification()
 }
 
 var errReloadCoolingDown = errors.New("upstream reload attempted too recently")
@@ -435,27 +383,16 @@ type reloadingUpstream struct {
 	reloadMu    sync.Mutex
 	lastAttempt time.Time
 
-	documentMu           sync.Mutex
-	lastDocumentKey      verificationDocumentKey
-	onVerificationChange func(*VerifiedDocument)
-}
-
-type verificationDocumentKey struct {
-	verifiedAt         string
-	enclaveHost        string
-	releaseTag         string
-	releaseDigest      string
-	tlsPublicKey       string
-	hpkePublicKey      string
-	codeFingerprint    [sha256.Size]byte
-	enclaveFingerprint [sha256.Size]byte
+	verificationMu       sync.Mutex
+	lastVerification     verificationSummary
+	onVerificationChange func(*verificationSummary)
 }
 
 func newReloadingUpstream(initial *upstream, build func() (*upstream, error)) *reloadingUpstream {
 	reloading := &reloadingUpstream{build: build, current: initial}
-	if initial.verificationDocument != nil {
-		if document := initial.verificationDocument(); document != nil {
-			reloading.lastDocumentKey = documentKey(document)
+	if initial.verification != nil {
+		if verification := initial.verification(); verification != nil {
+			reloading.lastVerification = *verification
 		}
 	}
 	return reloading
@@ -534,50 +471,24 @@ func (r *reloadingUpstream) reload(failed *upstream) (*upstream, error) {
 }
 
 func (r *reloadingUpstream) notifyVerificationChange(current *upstream, generation uint64) {
-	r.documentMu.Lock()
-	defer r.documentMu.Unlock()
+	r.verificationMu.Lock()
+	defer r.verificationMu.Unlock()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.current != current || r.generation != generation {
 		return
 	}
-	if current.verificationDocument == nil {
+	if current.verification == nil {
 		return
 	}
-	document := current.verificationDocument()
-	if document == nil || document.VerifiedAt == "" {
+	verification := current.verification()
+	if verification == nil || *verification == r.lastVerification {
 		return
 	}
-	key := documentKey(document)
-	if key == r.lastDocumentKey {
-		return
-	}
-	r.lastDocumentKey = key
+	r.lastVerification = *verification
 	if r.onVerificationChange != nil {
-		r.onVerificationChange(document)
+		r.onVerificationChange(verification)
 	}
-}
-
-func documentKey(document *VerifiedDocument) verificationDocumentKey {
-	tlsPublicKey, _ := document.TLSPublicKeyFP()
-	hpkePublicKey, _ := document.HPKEPublicKey()
-	return verificationDocumentKey{
-		verifiedAt:         document.VerifiedAt,
-		enclaveHost:        document.EnclaveHost,
-		releaseTag:         document.CodeTag,
-		releaseDigest:      document.CodeDigest,
-		tlsPublicKey:       tlsPublicKey,
-		hpkePublicKey:      hpkePublicKey,
-		codeFingerprint:    measurementFingerprint(document.CodeMeasurement),
-		enclaveFingerprint: measurementFingerprint(document.EnclaveMeasurement),
-	}
-}
-
-func measurementFingerprint(value *documentMeasurement) [sha256.Size]byte {
-	// This string-only struct has a deterministic, infallible JSON encoding.
-	// Snapshot the predicate and ordered registers, including nil measurements.
-	encoded, _ := json.Marshal(value)
-	return sha256.Sum256(encoded)
 }
 
 func requestForHost(req *http.Request, host string) *http.Request {

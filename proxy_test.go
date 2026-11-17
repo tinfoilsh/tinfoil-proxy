@@ -17,7 +17,6 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tinfoilsh/tinfoil-go"
-	"github.com/tinfoilsh/tinfoil-go/verify/document"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -124,34 +123,22 @@ func TestReverseProxyPreservesNonRedirectResponses(t *testing.T) {
 }
 
 func TestVerificationDocumentHandler(t *testing.T) {
-	document := &VerifiedDocument{
-		ConfigRepo:  "tinfoilsh/confidential-model-router",
-		EnclaveHost: "router.tinfoil.sh",
-		CodeDigest:  "digest-1",
-		Verifier: softwareIdentity{
-			Name:    "tinfoil-go",
-			Version: "v1.0.0",
-		},
-		VerifiedAt: "2026-08-04T12:30:00Z",
+	verification := &verificationSummary{
+		Enclave:       "router.tinfoil.sh",
+		Repo:          "tinfoilsh/confidential-model-router",
+		ReleaseTag:    "v1.0.0",
+		ReleaseDigest: "digest-1",
+		Platform:      platformSEVSNP,
+		VerifiedAt:    "2026-08-04T12:30:00Z",
 	}
 	reloading := newReloadingUpstream(&upstream{
-		host: "router.tinfoil.sh",
-		verificationDocument: func() *VerifiedDocument {
-			return document
-		},
+		host:         "router.tinfoil.sh",
+		verification: func() *verificationSummary { return verification },
 	}, nil)
-	runtime := proxyRuntime{
-		InstanceID: "instance-1",
-		Listener:   "127.0.0.1:3301",
-		Software: softwareIdentity{
-			Name:    proxySoftwareName,
-			Version: "v0.2.0",
-		},
-	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, verificationPath, nil)
 
-	verificationDocumentHandler(reloading, runtime).ServeHTTP(recorder, request)
+	verificationDocumentHandler(reloading).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected %d, got %d", http.StatusOK, recorder.Code)
@@ -162,15 +149,12 @@ func TestVerificationDocumentHandler(t *testing.T) {
 	if recorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("expected no-store cache policy, got %q", recorder.Header().Get("Cache-Control"))
 	}
-	var response proxyVerificationDocument
+	var response map[string]string
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.CodeDigest != "digest-1" {
-		t.Fatalf("expected active document digest, got %q", response.CodeDigest)
-	}
-	if response.Runtime.InstanceID != runtime.InstanceID || response.Runtime.Listener != runtime.Listener {
-		t.Fatalf("expected runtime binding %+v, got %+v", runtime, response.Runtime)
+	if response["enclave"] != "router.tinfoil.sh" || response["release_digest"] != "digest-1" || response["verified_at"] != "2026-08-04T12:30:00Z" {
+		t.Fatalf("expected the active verification, got %v", response)
 	}
 }
 
@@ -185,7 +169,7 @@ func TestVerificationDocumentHandlerRejectsOtherMethods(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, verificationPath, nil)
 
-	verificationDocumentHandler(reloading, proxyRuntime{}).ServeHTTP(recorder, request)
+	verificationDocumentHandler(reloading).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, recorder.Code)
@@ -199,50 +183,46 @@ func TestVerificationDocumentHandlerRejectsOtherMethods(t *testing.T) {
 }
 
 func TestVerificationDocumentHandlerUsesReloadedUpstream(t *testing.T) {
-	document := func(digest string) func() *VerifiedDocument {
-		return func() *VerifiedDocument {
-			return &VerifiedDocument{CodeDigest: digest}
+	verification := func(digest string) func() *verificationSummary {
+		return func() *verificationSummary {
+			return &verificationSummary{ReleaseDigest: digest}
 		}
 	}
-	reloading := newReloadingUpstream(&upstream{verificationDocument: document("old")}, nil)
-	runtime := proxyRuntime{InstanceID: "stable-instance"}
-	handler := verificationDocumentHandler(reloading, runtime)
+	reloading := newReloadingUpstream(&upstream{verification: verification("old")}, nil)
+	handler := verificationDocumentHandler(reloading)
 
 	reloading.mu.Lock()
-	reloading.current = &upstream{verificationDocument: document("new")}
+	reloading.current = &upstream{verification: verification("new")}
 	reloading.mu.Unlock()
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, verificationPath, nil))
 
-	var response proxyVerificationDocument
+	var response verificationSummary
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.CodeDigest != "new" {
-		t.Fatalf("expected reloaded document, got %q", response.CodeDigest)
-	}
-	if response.Runtime.InstanceID != runtime.InstanceID {
-		t.Fatalf("expected stable instance ID, got %q", response.Runtime.InstanceID)
+	if response.ReleaseDigest != "new" {
+		t.Fatalf("expected reloaded verification, got %q", response.ReleaseDigest)
 	}
 }
 
 func TestReloadNotifiesAfterVerifiedUpstreamSwap(t *testing.T) {
 	initial := &upstream{
 		host: "old.example",
-		verificationDocument: func() *VerifiedDocument {
-			return &VerifiedDocument{VerifiedAt: "2026-08-05T00:00:00Z"}
+		verification: func() *verificationSummary {
+			return &verificationSummary{VerifiedAt: "2026-08-05T00:00:00Z"}
 		},
 	}
 	reloading := newReloadingUpstream(initial, func() (*upstream, error) {
 		return &upstream{
 			host: "new.example",
-			verificationDocument: func() *VerifiedDocument {
-				return &VerifiedDocument{VerifiedAt: "2026-08-05T00:01:00Z"}
+			verification: func() *verificationSummary {
+				return &verificationSummary{VerifiedAt: "2026-08-05T00:01:00Z"}
 			},
 		}, nil
 	})
 	notifications := 0
-	reloading.onVerificationChange = func(*VerifiedDocument) { notifications++ }
+	reloading.onVerificationChange = func(*verificationSummary) { notifications++ }
 
 	next, err := reloading.reload(initial)
 	if err != nil {
@@ -257,20 +237,20 @@ func TestReloadNotifiesAfterVerifiedUpstreamSwap(t *testing.T) {
 }
 
 func TestRoundTripNotifiesWhenInnerTransportReverifiesThenFails(t *testing.T) {
-	document := &VerifiedDocument{VerifiedAt: "2026-08-05T00:00:00Z"}
+	document := &verificationSummary{VerifiedAt: "2026-08-05T00:00:00Z"}
 	initial := &upstream{
 		host: "router.example",
 		transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			document = &VerifiedDocument{VerifiedAt: "2026-08-05T00:01:00Z"}
+			document = &verificationSummary{VerifiedAt: "2026-08-05T00:01:00Z"}
 			return nil, errors.New("request failed after re-verification")
 		}),
-		verificationDocument: func() *VerifiedDocument { return document },
+		verification: func() *verificationSummary { return document },
 	}
 	reloading := newReloadingUpstream(initial, func() (*upstream, error) {
 		return nil, errors.New("reload failed")
 	})
 	var notifiedAt string
-	reloading.onVerificationChange = func(document *VerifiedDocument) {
+	reloading.onVerificationChange = func(document *verificationSummary) {
 		notifiedAt = document.VerifiedAt
 	}
 
@@ -284,24 +264,24 @@ func TestRoundTripNotifiesWhenInnerTransportReverifiesThenFails(t *testing.T) {
 }
 
 func TestVerificationNotificationsAllowClockRegressionOnCurrentUpstream(t *testing.T) {
-	document := &VerifiedDocument{VerifiedAt: "2026-08-05T00:00:00Z"}
+	document := &verificationSummary{VerifiedAt: "2026-08-05T00:00:00Z"}
 	current := &upstream{
-		verificationDocument: func() *VerifiedDocument {
+		verification: func() *verificationSummary {
 			return document
 		},
 	}
 	reloading := newReloadingUpstream(current, nil)
 	var notifications []string
-	reloading.onVerificationChange = func(document *VerifiedDocument) {
+	reloading.onVerificationChange = func(document *verificationSummary) {
 		notifications = append(notifications, document.VerifiedAt)
 	}
 	_, generation := reloading.snapshot()
 
-	document = &VerifiedDocument{VerifiedAt: "2026-08-05T00:02:00Z", EnclaveHost: "router-a.example"}
+	document = &verificationSummary{VerifiedAt: "2026-08-05T00:02:00Z", Enclave: "router-a.example"}
 	reloading.notifyVerificationChange(current, generation)
-	document = &VerifiedDocument{VerifiedAt: "2026-08-05T00:01:00Z", EnclaveHost: "router-a.example"}
+	document = &verificationSummary{VerifiedAt: "2026-08-05T00:01:00Z", Enclave: "router-a.example"}
 	reloading.notifyVerificationChange(current, generation)
-	document = &VerifiedDocument{VerifiedAt: "2026-08-05T00:01:00Z", EnclaveHost: "router-b.example"}
+	document = &verificationSummary{VerifiedAt: "2026-08-05T00:01:00Z", Enclave: "router-b.example"}
 	reloading.notifyVerificationChange(current, generation)
 
 	if len(notifications) != 3 || notifications[2] != "2026-08-05T00:01:00Z" {
@@ -311,88 +291,35 @@ func TestVerificationNotificationsAllowClockRegressionOnCurrentUpstream(t *testi
 
 func TestVerificationNotificationsIgnoreReplacedUpstream(t *testing.T) {
 	current := &upstream{
-		verificationDocument: func() *VerifiedDocument {
-			return &VerifiedDocument{VerifiedAt: "2026-08-05T00:00:00Z"}
+		verification: func() *verificationSummary {
+			return &verificationSummary{VerifiedAt: "2026-08-05T00:00:00Z"}
 		},
 	}
 	reloading := newReloadingUpstream(current, nil)
-	reloading.onVerificationChange = func(*VerifiedDocument) {
+	reloading.onVerificationChange = func(*verificationSummary) {
 		t.Fatal("stale upstream emitted a verification update")
 	}
 	_, generation := reloading.snapshot()
 	reloading.notifyVerificationChange(&upstream{
-		verificationDocument: func() *VerifiedDocument {
-			return &VerifiedDocument{VerifiedAt: "2026-08-05T00:01:00Z"}
+		verification: func() *verificationSummary {
+			return &verificationSummary{VerifiedAt: "2026-08-05T00:01:00Z"}
 		},
 	}, generation)
 }
 
 func TestVerificationNotificationsDetectKeyRotation(t *testing.T) {
-	const hpkeKeyBytes = 32
-	verified := &VerifiedDocument{
-		VerifiedAt: "2026-10-19T00:00:00Z",
-		CryptoMaterial: []document.CryptoMaterialItem{{
-			ID:     document.CryptoMaterialIDHPKE,
-			Format: document.KeyX25519HPKEV1Format,
-			Data:   strings.Repeat("ab", hpkeKeyBytes),
-		}},
-	}
-	current := &upstream{verificationDocument: func() *VerifiedDocument { return verified }}
+	verified := &verificationSummary{VerifiedAt: "2026-10-19T00:00:00Z", TLSKeyFingerprint: "ab"}
+	current := &upstream{verification: func() *verificationSummary { return verified }}
 	reloading := newReloadingUpstream(current, nil)
 	notifications := 0
-	reloading.onVerificationChange = func(*VerifiedDocument) { notifications++ }
+	reloading.onVerificationChange = func(*verificationSummary) { notifications++ }
 	_, generation := reloading.snapshot()
 	reloading.notifyVerificationChange(current, generation)
-	verified.CryptoMaterial[0].Data = strings.Repeat("cd", hpkeKeyBytes)
+	verified = &verificationSummary{VerifiedAt: "2026-10-19T00:00:00Z", TLSKeyFingerprint: "cd"}
 	reloading.notifyVerificationChange(current, generation)
 	reloading.notifyVerificationChange(current, generation)
 	if notifications != 1 {
 		t.Fatalf("expected one notification for the rotated key, got %d", notifications)
-	}
-}
-
-func TestVerificationNotificationsDetectMeasurementChanges(t *testing.T) {
-	for _, field := range []string{"code", "enclave"} {
-		t.Run(field, func(t *testing.T) {
-			verified := &VerifiedDocument{
-				VerifiedAt: "2026-10-19T00:00:00Z",
-				CodeMeasurement: &documentMeasurement{
-					Type:      sevSNPMeasurementType,
-					Registers: []string{strings.Repeat("ab", 48)},
-				},
-				EnclaveMeasurement: &documentMeasurement{
-					Type:      sevSNPMeasurementType,
-					Registers: []string{strings.Repeat("ab", 48)},
-				},
-			}
-			current := &upstream{verificationDocument: func() *VerifiedDocument { return verified }}
-			reloading := newReloadingUpstream(current, nil)
-			notifications := 0
-			reloading.onVerificationChange = func(*VerifiedDocument) { notifications++ }
-			_, generation := reloading.snapshot()
-			target := &verified.CodeMeasurement
-			if field == "enclave" {
-				target = &verified.EnclaveMeasurement
-			}
-
-			// A new allocation with the same measurement is not a change.
-			*target = &documentMeasurement{
-				Type:      (*target).Type,
-				Registers: append([]string(nil), (*target).Registers...),
-			}
-			reloading.notifyVerificationChange(current, generation)
-			if notifications != 0 {
-				t.Fatalf("equivalent measurement emitted %d notifications", notifications)
-			}
-
-			// Only the measurement changes; all other document fields stay fixed.
-			(*target).Registers[0] = strings.Repeat("cd", 48)
-			reloading.notifyVerificationChange(current, generation)
-			reloading.notifyVerificationChange(current, generation)
-			if notifications != 1 {
-				t.Fatalf("expected one notification for the changed measurement, got %d", notifications)
-			}
-		})
 	}
 }
 

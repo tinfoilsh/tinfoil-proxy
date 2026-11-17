@@ -6,7 +6,7 @@ import { app } from 'electron'
 import { z } from 'zod'
 
 import { PROXY_LISTEN_HOST } from './constants.js'
-import { stateStore } from './state.js'
+import { stateStore, type ProxyState } from './state.js'
 
 const PROXY_STOP_GRACE_MS = 3000
 const STDERR_TAIL_LIMIT = 4096
@@ -15,40 +15,23 @@ const PORT_IN_USE_PATTERN = /address already in use|EADDRINUSE/i
 
 type CliProcess = ChildProcessByStdio<Writable, Readable, Readable>
 
-const proxyVerificationDocumentSchema = z.object({
-  ConfigRepo: z.string().min(1),
-  EnclaveHost: z.string().min(1),
-  CodeTag: z.string(),
-  CodeDigest: z.string().min(1),
-  CodeMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
-  EnclaveMeasurement: z.object({ type: z.string().min(1), registers: z.array(z.string()).min(1) }),
-  CryptoMaterial: z.array(z.object({
-    id: z.string().min(1),
-    format: z.string().min(1),
-    data: z.string().min(1)
-  })).min(1),
-  Verifier: z.object({ name: z.string().min(1), version: z.string().min(1) }),
-  VerifiedAt: z.string().min(1),
-  FreshnessExpiresAt: z.string().min(1),
-  runtime: z.object({
-    instanceId: z.string().min(1),
-    listener: z.string().min(1),
-    software: z.object({
-      name: z.literal('tinfoil-proxy'),
-      version: z.string().min(1)
-    })
-  })
+const verificationSchema = z.object({
+  enclave: z.string().min(1),
+  repo: z.string().min(1),
+  release_tag: z.string(),
+  release_digest: z.string().min(1),
+  platform: z.string().min(1),
+  tls_key_fingerprint: z.string(),
+  verified_at: z.string().min(1),
+  expires_at: z.string().min(1)
 })
 
-type ProxyVerificationDocument = z.infer<typeof proxyVerificationDocumentSchema>
+type Verification = z.infer<typeof verificationSchema>
 
 interface ReadyMessage {
   event: 'ready'
-  instanceId: string
-  enclave: string
-  repo: string
   listen: string
-  verificationDocument: ProxyVerificationDocument
+  verification: Verification
 }
 
 interface TokensMessage {
@@ -64,7 +47,7 @@ interface InvalidReadyMessage {
 
 interface VerificationMessage {
   event: 'verification'
-  verificationDocument: ProxyVerificationDocument
+  verification: Verification
 }
 
 interface InvalidVerificationMessage {
@@ -105,7 +88,16 @@ export function verificationDocumentEndpoint(port: number): string {
   return `http://${PROXY_LISTEN_HOST}:${port}/verification-document`
 }
 
-function setProxyState(partial: Partial<ReturnType<typeof stateStore.get>['proxy']>): void {
+function verifiedState(verification: Verification): Partial<ProxyState> {
+  return {
+    enclave: verification.enclave,
+    releaseTag: verification.release_tag,
+    platform: verification.platform,
+    verifiedAt: verification.verified_at
+  }
+}
+
+function setProxyState(partial: Partial<ProxyState>): void {
   const current = stateStore.get().proxy
   stateStore.set({ proxy: { ...current, ...partial } })
 }
@@ -148,33 +140,19 @@ function parseProxyLine(line: string): ProxyMessage | null {
   try {
     const parsed = JSON.parse(line) as Record<string, unknown>
     if (parsed.event === 'ready') {
-      if (
-        typeof parsed.instance_id !== 'string' ||
-        typeof parsed.enclave !== 'string' ||
-        typeof parsed.repo !== 'string' ||
-        typeof parsed.listen !== 'string' ||
-        typeof parsed.verification_document !== 'object' ||
-        parsed.verification_document === null
-      ) {
+      if (typeof parsed.listen !== 'string') {
         return { event: 'invalid-ready', error: 'proxy ready message is missing required fields' }
       }
-      const document = proxyVerificationDocumentSchema.safeParse(parsed.verification_document)
-      if (!document.success) {
-        const issue = document.error.issues[0]
-        const field = issue?.path.join('.') || 'verification_document'
+      const verification = verificationSchema.safeParse(parsed.verification)
+      if (!verification.success) {
+        const issue = verification.error.issues[0]
+        const field = issue?.path.join('.') || 'verification'
         return {
           event: 'invalid-ready',
-          error: `verification document schema mismatch at ${field}: ${issue?.message ?? 'invalid value'}`
+          error: `verification schema mismatch at ${field}: ${issue?.message ?? 'invalid value'}`
         }
       }
-      return {
-        event: 'ready',
-        instanceId: parsed.instance_id,
-        enclave: parsed.enclave,
-        repo: parsed.repo,
-        listen: parsed.listen,
-        verificationDocument: document.data
-      }
+      return { event: 'ready', listen: parsed.listen, verification: verification.data }
     }
     if (
       parsed.event === 'tokens' &&
@@ -188,16 +166,16 @@ function parseProxyLine(line: string): ProxyMessage | null {
       }
     }
     if (parsed.event === 'verification') {
-      const document = proxyVerificationDocumentSchema.safeParse(parsed.verification_document)
-      if (!document.success) {
-        const issue = document.error.issues[0]
-        const field = issue?.path.join('.') || 'verification_document'
+      const verification = verificationSchema.safeParse(parsed.verification)
+      if (!verification.success) {
+        const issue = verification.error.issues[0]
+        const field = issue?.path.join('.') || 'verification'
         return {
           event: 'invalid-verification',
-          error: `updated verification document schema mismatch at ${field}: ${issue?.message ?? 'invalid value'}`
+          error: `updated verification schema mismatch at ${field}: ${issue?.message ?? 'invalid value'}`
         }
       }
-      return { event: 'verification', verificationDocument: document.data }
+      return { event: 'verification', verification: verification.data }
     }
   } catch {
     // Not a JSON line; ignore.
@@ -251,7 +229,6 @@ export async function startProxy(
     env: { ...process.env }
   }) as CliProcess
   const logSink = { stderrTail: '' }
-  let acceptedInstanceID: string | undefined
   let acceptedRepo: string | undefined
 
   setProxyState({
@@ -314,21 +291,16 @@ export async function startProxy(
         return
       }
       if (message.event === 'verification') {
-        if (child !== proc || proc.exitCode !== null || !acceptedInstanceID || !acceptedRepo) return
-        const document = message.verificationDocument
-        if (
-          document.runtime.instanceId !== acceptedInstanceID ||
-          document.runtime.listener !== `${PROXY_LISTEN_HOST}:${port}` ||
-          document.ConfigRepo !== acceptedRepo
-        ) {
+        if (child !== proc || proc.exitCode !== null || !acceptedRepo) return
+        if (message.verification.repo !== acceptedRepo) {
           setProxyState({
             verified: false,
-            lastError: 'Updated verification document does not match the running proxy instance'
+            lastError: 'Updated verification does not match the running proxy'
           })
           proc.kill('SIGTERM')
           return
         }
-        setProxyState({ enclave: document.EnclaveHost, verifiedAt: document.VerifiedAt })
+        setProxyState(verifiedState(message.verification))
         return
       }
       if (message.event === 'invalid-ready') {
@@ -405,39 +377,26 @@ export async function startProxy(
     return null
   }
 
-  setProxyState({ enclave: ready.enclave })
-
-  const document = ready.verificationDocument
-  if (
-    document.runtime.instanceId !== ready.instanceId ||
-    document.runtime.listener !== ready.listen ||
-    document.EnclaveHost !== ready.enclave ||
-    document.ConfigRepo !== ready.repo ||
-    ready.listen !== `${PROXY_LISTEN_HOST}:${port}`
-  ) {
+  if (ready.listen !== `${PROXY_LISTEN_HOST}:${port}`) {
     setProxyState({
       running: false,
       verifying: false,
       verified: false,
-      lastError: 'Proxy verification document does not match the running proxy instance'
+      lastError: 'Proxy is not listening on the requested address'
     })
     sendSignal(proc, 'abort')
     return null
   }
 
-  // The desktop app ships and trusts this proxy binary as its active verifier.
-  // Binding the document to this process and listener avoids a second verifier
-  // with independently changing release selection rather than adding a new
-  // trust root.
-  acceptedInstanceID = ready.instanceId
-  acceptedRepo = ready.repo
+  // The desktop app ships and trusts this proxy binary as its verifier.
+  acceptedRepo = ready.verification.repo
   sendSignal(proc, 'go')
   setProxyState({
     running: true,
     verifying: false,
     verified: true,
-    verifiedAt: document.VerifiedAt,
-    lastError: undefined
+    lastError: undefined,
+    ...verifiedState(ready.verification)
   })
   return { port, endpoint: proxyEndpoint(port) }
 }
