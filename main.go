@@ -26,6 +26,7 @@ const (
 var (
 	enclaveHost      string
 	repo             string
+	project          string
 	listenPort       uint
 	listenAddr       string
 	logFormat        string
@@ -49,7 +50,8 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.Version = proxyVersion()
 	rootCmd.Flags().StringVarP(&enclaveHost, "host", "e", "", "Enclave hostname")
-	rootCmd.Flags().StringVarP(&repo, "repo", "r", "", "Enclave config repo")
+	rootCmd.Flags().StringVarP(&repo, "repo", "r", "", "GitHub repository the enclave must run a release of")
+	rootCmd.Flags().StringVar(&project, "project", "", "Config registry project the enclave must run a config of")
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
