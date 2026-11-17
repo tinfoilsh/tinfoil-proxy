@@ -4,10 +4,10 @@
 # binary, verifies it against the SHA-256 digest published by the GitHub
 # release API, and installs it to /usr/local/bin.
 #
-# The digest comes from api.github.com, an origin independent of the release
-# download CDN, so a compromised download path cannot substitute a different
-# binary. For provenance verification against the release workflow identity,
-# download the binary and verify its Sigstore attestation with
+# The digest comes from GitHub's API via Tinfoil's GitHub proxy, independently
+# of the release download CDN. A compromised download path cannot substitute
+# a different binary. For provenance verification against the release workflow
+# identity, download the binary and verify its Sigstore attestation with
 # `gh attestation verify` before installing.
 #
 # Usage: curl -fsSL https://github.com/tinfoilsh/tinfoil-proxy/raw/main/install.sh | sh
@@ -19,7 +19,10 @@
 set -eu
 
 REPO="tinfoilsh/tinfoil-proxy"
+GITHUB_PROXY="https://github-proxy.tinfoil.sh"
 BIN_NAME="tinfoil-proxy"
+RELEASE_VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+SHA256_PATTERN='^[0-9a-f]{64}$'
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 # Download $1 to $2 using curl or wget.
@@ -34,6 +37,35 @@ download() {
     echo "Error: This installer requires curl or wget."
     exit 1
   fi
+}
+
+# Print the string members of the JSON file $1 as name=value lines, in order,
+# whether the file is formatted or on a single line.
+#
+# Every structural character starts a new line, including those inside string
+# values. Quotes inside a string value are always escaped, so a piece of one
+# never has the shape of a member and is dropped. The C locale keeps the tools
+# working on bytes, whatever the user's locale.
+json_string_members() {
+  LC_ALL=C tr '{}[],' '\n' < "$1" |
+    LC_ALL=C sed -n 's/^[[:space:]]*"\([^"\\]*\)":[[:space:]]*"\([^"\\]*\)"[[:space:]]*$/\1=\2/p'
+}
+
+# Print the version of the release described by the metadata file $1, without
+# a leading "v".
+release_version() {
+  json_string_members "$1" |
+    LC_ALL=C awk '!found && sub(/^tag_name=v?/, "") { print; found = 1 }'
+}
+
+# Print the SHA-256 digest that the metadata file $1 publishes for the asset
+# named $2. An asset lists its name before its digest.
+asset_sha256() {
+  json_string_members "$1" |
+    LC_ALL=C awk -v asset="$2" '
+      /^name=/ { selected = ($0 == "name=" asset) }
+      selected && !found && sub(/^digest=sha256:/, "") { print; found = 1 }
+    '
 }
 
 main() {
@@ -81,9 +113,9 @@ main() {
   # -------------------------------
   ASSET="${BIN_NAME}-${OS}-${ARCH}"
   if [ -n "${VERSION:-}" ]; then
-    API_URL="https://api.github.com/repos/${REPO}/releases/tags/v${VERSION#v}"
+    API_URL="${GITHUB_PROXY}/repos/${REPO}/releases/tags/v${VERSION#v}"
   else
-    API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+    API_URL="${GITHUB_PROXY}/repos/${REPO}/releases/latest"
   fi
 
   TMPDIR="$(mktemp -d)"
@@ -94,19 +126,19 @@ main() {
     echo "Error: Could not fetch release metadata."
     exit 1
   fi
-  RELEASE_JSON="$(cat "$TMPDIR/release.json")"
 
-  # The tag_name might be like "v0.2.6". We remove a leading "v".
-  VERSION="$(printf '%s\n' "$RELEASE_JSON" | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')"
-  if [ -z "$VERSION" ]; then
+  # The tag_name might be like "v0.2.6". We remove a leading "v". The version
+  # becomes part of the download URL, so only a plain version is accepted to
+  # keep the download inside this repository's releases.
+  VERSION="$(release_version "$TMPDIR/release.json")"
+  if ! printf '%s\n' "$VERSION" | LC_ALL=C grep -Eq "$RELEASE_VERSION_PATTERN"; then
     echo "Error: Could not determine release version."
     exit 1
   fi
   echo "Release version: $VERSION"
 
-  ASSETS_JSON="$(printf '%s\n' "$RELEASE_JSON" | sed -n '/"assets": \[/,/^  \],/p')"
-  EXPECTED_DIGEST="$(printf '%s\n' "$ASSETS_JSON" | grep -A 80 "\"name\": \"${ASSET}\"" | grep -m1 '"digest": "sha256:' | sed -E 's/.*sha256:([0-9a-f]{64}).*/\1/')"
-  if [ -z "$EXPECTED_DIGEST" ]; then
+  EXPECTED_DIGEST="$(asset_sha256 "$TMPDIR/release.json" "$ASSET")"
+  if ! printf '%s\n' "$EXPECTED_DIGEST" | LC_ALL=C grep -Eq "$SHA256_PATTERN"; then
     echo "Error: No SHA-256 digest published for ${ASSET}."
     echo "The download was not installed."
     exit 1
