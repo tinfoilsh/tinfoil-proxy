@@ -1,6 +1,6 @@
 # Tinfoil Proxy
 
-A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, forwards requests directly to a verified Tinfoil router enclave, verifies that enclave against the public attestation transparency log, and pins every connection to the enclave's attested TLS key, so intermediaries cannot read or alter them. Point any OpenAI-compatible tool at the local URL and every request runs over a verified connection.
+A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, forwards requests directly to a verified Tinfoil router enclave, verifies that enclave against the public attestation transparency log, and by default pins every connection to the enclave's attested TLS key, so intermediaries cannot read or alter them. Point any OpenAI-compatible tool at the local URL and its requests go to the verified enclave.
 
 [![Documentation](https://img.shields.io/badge/docs-tinfoil.sh-blue)](https://docs.tinfoil.sh/local-proxy/cli)
 
