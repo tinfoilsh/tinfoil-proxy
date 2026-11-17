@@ -283,8 +283,9 @@ networkPolicy:
     #  - 203.0.113.10/32
     ## @param networkPolicy.egress.allowDNS DNS egress. The proxy resolves the trusted domains at startup and on re-verification.
     allowDNS: true
-    ## @param networkPolicy.egress.dnsServer Labels matched on kube-dns pods. Adjust if the cluster runs a different resolver.
+    ## @param networkPolicy.egress.dnsServer Namespace and label of the cluster DNS pods. Adjust if the cluster runs a different resolver.
     dnsServer:
+      namespace: kube-system
       k8sAppLabel: kube-dns
     ## @param networkPolicy.egress.extraEgress [array] Raw egress rules appended verbatim (standard NetworkPolicy mode only).
     extraEgress: []

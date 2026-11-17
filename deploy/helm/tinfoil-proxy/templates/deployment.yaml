@@ -28,10 +28,9 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "tinfoil-proxy.selectorLabels" . | nindent 8 }}
-        {{- with .Values.global.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        {{- /* Selector labels win, so a pod label cannot detach pods from the Service. */}}
+        {{- $selectorLabels := include "tinfoil-proxy.selectorLabels" . | fromYaml }}
+        {{- toYaml (merge (dict) $selectorLabels .Values.global.podLabels) | nindent 8 }}
       {{- with .Values.global.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
