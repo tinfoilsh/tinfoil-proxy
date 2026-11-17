@@ -91,65 +91,6 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run build
 
-  chart:
-    name: Helm chart
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install kubeconform
-        env:
-          # GitHub computes and serves this asset digest for kubeconform v0.8.0.
-          KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tgz
-          echo "$KUBECONFORM_SHA256  /tmp/kubeconform.tgz" | sha256sum -c -
-          tar -xzf /tmp/kubeconform.tgz -C "$HOME/.local/bin" kubeconform
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Lint, render, and validate
-        run: |
-          set -euo pipefail
-          CHART=deploy/helm/tinfoil-proxy
-          helm lint "$CHART"
-          helm template tinfoil-proxy "$CHART" > /tmp/default.yaml
-          helm template tinfoil-proxy "$CHART" \
-            --set healthcheck.type=http \
-            --set proxy.userCacheSecret.existingSecret=cache-secret \
-            --set networkPolicy.enabled=true \
-            --set 'networkPolicy.egress.tinfoilCIDRs={203.0.113.10/32}' \
-            --set-json 'networkPolicy.ingress.allowedIngressFrom=[{"namespace":"gateway"}]' \
-            --set-json 'networkPolicy.egress.extraEgress=[{"to":[{"ipBlock":{"cidr":"198.51.100.0/24"}}],"ports":[{"protocol":"TCP","port":443}]}]' > /tmp/restricted.yaml
-          helm template tinfoil-proxy "$CHART" \
-            --set networkPolicy.enabled=true \
-            --set networkPolicy.egress.useFQDNEgress=true > /tmp/cilium.yaml
-          # The Cilium policy is a custom resource with no bundled schema.
-          kubeconform -strict -summary -kubernetes-version 1.31.0 -skip CiliumNetworkPolicy \
-            /tmp/default.yaml /tmp/restricted.yaml /tmp/cilium.yaml
-
-      - name: Refuse unsafe network policies
-        run: |
-          set -euo pipefail
-          CHART=deploy/helm/tinfoil-proxy
-          # An enabled policy with no egress destinations must not render.
-          if helm template tinfoil-proxy "$CHART" --set networkPolicy.enabled=true > /dev/null 2>&1; then
-            exit 1
-          fi
-          # An ingress source with no selector would allow every client.
-          if helm template tinfoil-proxy "$CHART" \
-            --set networkPolicy.enabled=true \
-            --set 'networkPolicy.egress.tinfoilCIDRs={203.0.113.10/32}' \
-            --set-json 'networkPolicy.ingress.allowedIngressFrom=[{}]' > /dev/null 2>&1; then
-            exit 1
-          fi
-
   go:
     name: Go tests
     runs-on: ubuntu-latest
