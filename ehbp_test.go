@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	ehbpclient "github.com/tinfoilsh/encrypted-http-body-protocol/client"
 	ehbpidentity "github.com/tinfoilsh/encrypted-http-body-protocol/identity"
@@ -290,7 +291,12 @@ func TestProxyDoesNotForwardClientAddress(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if got := <-forwarded; len(got) != 0 {
-		t.Fatalf("expected no X-Forwarded-For upstream, got %q", got)
+	select {
+	case got := <-forwarded:
+		if len(got) != 0 {
+			t.Fatalf("expected no X-Forwarded-For upstream, got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("request never reached the upstream (proxy status %d)", resp.StatusCode)
 	}
 }
