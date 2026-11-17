@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,12 +125,14 @@ func TestReverseProxyPreservesNonRedirectResponses(t *testing.T) {
 
 func TestVerificationDocumentHandler(t *testing.T) {
 	verification := &verificationSummary{
-		Enclave:       "router.tinfoil.sh",
-		Repo:          "tinfoilsh/confidential-model-router",
-		ReleaseTag:    "v1.0.0",
-		ReleaseDigest: "digest-1",
-		Platform:      platformSEVSNP,
-		VerifiedAt:    "2026-08-04T12:30:00Z",
+		Enclave:           "router.tinfoil.sh",
+		Repo:              "tinfoilsh/confidential-model-router",
+		ReleaseTag:        "v1.0.0",
+		ReleaseDigest:     "digest-1",
+		Platform:          platformSEVSNP,
+		TLSKeyFingerprint: "fingerprint-1",
+		VerifiedAt:        "2026-08-04T12:30:00Z",
+		ExpiresAt:         "2026-08-07T12:30:00Z",
 	}
 	reloading := newReloadingUpstream(&upstream{
 		host:         "router.tinfoil.sh",
@@ -153,8 +156,18 @@ func TestVerificationDocumentHandler(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response["enclave"] != "router.tinfoil.sh" || response["release_digest"] != "digest-1" || response["verified_at"] != "2026-08-04T12:30:00Z" {
-		t.Fatalf("expected the active verification, got %v", response)
+	expected := map[string]string{
+		"enclave":             "router.tinfoil.sh",
+		"repo":                "tinfoilsh/confidential-model-router",
+		"release_tag":         "v1.0.0",
+		"release_digest":      "digest-1",
+		"platform":            platformSEVSNP,
+		"tls_key_fingerprint": "fingerprint-1",
+		"verified_at":         "2026-08-04T12:30:00Z",
+		"expires_at":          "2026-08-07T12:30:00Z",
+	}
+	if !maps.Equal(response, expected) {
+		t.Fatalf("expected the active verification %v, got %v", expected, response)
 	}
 }
 

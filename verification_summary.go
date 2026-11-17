@@ -38,8 +38,8 @@ func newVerificationSummary(enclave string, verification *verify.Verification) *
 		ReleaseDigest:     verification.CodeDigest(),
 		Platform:          platformName(verification.EnclaveMeasurement()),
 		TLSKeyFingerprint: fingerprint,
-		VerifiedAt:        verification.Metadata().VerifiedAt.UTC().Format(time.RFC3339),
-		ExpiresAt:         verification.FreshnessExpiresAt().UTC().Format(time.RFC3339),
+		VerifiedAt:        verification.Metadata().VerifiedAt.UTC().Format(time.RFC3339Nano),
+		ExpiresAt:         verification.FreshnessExpiresAt().UTC().Format(time.RFC3339Nano),
 	}
 }
 
