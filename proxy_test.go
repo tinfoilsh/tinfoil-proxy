@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -204,7 +205,7 @@ func TestHealthzReportsVerifiedUpstream(t *testing.T) {
 	}, nil)
 	recorder := httptest.NewRecorder()
 
-	healthzHandler(reloading).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+	healthzHandler(reloading, new(atomic.Bool)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected %d with a verified upstream, got %d", http.StatusOK, recorder.Code)
@@ -218,10 +219,27 @@ func TestHealthzReportsUnavailableWithoutVerifiedUpstream(t *testing.T) {
 	reloading := newReloadingUpstream(&upstream{}, nil)
 	recorder := httptest.NewRecorder()
 
-	healthzHandler(reloading).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+	healthzHandler(reloading, new(atomic.Bool)).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
 
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected %d without a verified upstream, got %d", http.StatusServiceUnavailable, recorder.Code)
+	}
+}
+
+func TestHealthzReportsUnavailableWhileDraining(t *testing.T) {
+	reloading := newReloadingUpstream(&upstream{
+		verification: func() *verificationSummary {
+			return &verificationSummary{ReleaseDigest: "digest-1"}
+		},
+	}, nil)
+	var draining atomic.Bool
+	draining.Store(true)
+	recorder := httptest.NewRecorder()
+
+	healthzHandler(reloading, &draining).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, healthzPath, nil))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected %d while draining, got %d", http.StatusServiceUnavailable, recorder.Code)
 	}
 }
 
@@ -230,7 +248,7 @@ func TestHealthzRejectsOtherMethods(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, healthzPath, nil)
 
-	healthzHandler(reloading).ServeHTTP(recorder, request)
+	healthzHandler(reloading, new(atomic.Bool)).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, recorder.Code)
