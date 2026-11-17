@@ -5,7 +5,6 @@ import { trayIcon, trayIconState } from './icons.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
 import { hidePopup, showDetailsWindow, togglePopup } from './popup.js'
 import { proxyEndpoint, startProxy, stopProxy } from './proxy.js'
-import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
 
 const isLinux = process.platform === 'linux'
@@ -72,16 +71,6 @@ function buildMenu(state: TrayState, openDetails: () => void): Menu {
       }
     })
   }
-
-  items.push(
-    { type: 'separator' },
-    {
-      label: 'Refresh routers',
-      click: () => {
-        reportClickError(refreshRouters(), 'Failed to refresh routers')
-      }
-    }
-  )
 
   const note = state.proxy.lastError ?? state.lastError
   if (note && !(state.proxy.enabled && state.proxy.running)) {

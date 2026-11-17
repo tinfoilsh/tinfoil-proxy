@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { PiArrowsClockwise, PiCaretRight, PiSpinner, PiX } from 'react-icons/pi'
+import { PiCaretRight, PiX } from 'react-icons/pi'
 
-const REFRESH_MIN_SPIN_MS = 1000
 const TOKEN_COUNT_FORMATTER = new Intl.NumberFormat(undefined, {
   notation: 'compact',
   maximumFractionDigits: 1
@@ -27,15 +26,14 @@ function useDarkMode(): boolean {
   return dark
 }
 
-function fleetDot(status: TrayState['status']): string {
-  switch (status) {
-    case 'verified':
-      return 'router-dot router-verified'
-    case 'failed':
-      return 'router-dot router-failed'
-    default:
-      return 'router-dot'
-  }
+const PLATFORM_LABELS: Record<string, string> = {
+  'sev-snp': 'AMD SEV-SNP',
+  tdx: 'Intel TDX'
+}
+
+function describeEnclave(proxy: TrayState['proxy']): string {
+  const platform = proxy.platform ? (PLATFORM_LABELS[proxy.platform] ?? proxy.platform) : undefined
+  return [proxy.enclave, proxy.releaseTag, platform].filter(Boolean).join(' · ')
 }
 
 function formatTokenCount(count: number): string {
@@ -238,19 +236,6 @@ export default function App() {
     await window.tinfoil.openVerificationDocument()
   }, [])
 
-  const [refreshing, setRefreshing] = useState(false)
-  const onRefreshRouters = useCallback(async () => {
-    if (refreshing) return
-    setRefreshing(true)
-    const minDuration = new Promise((resolve) => setTimeout(resolve, REFRESH_MIN_SPIN_MS))
-    try {
-      const [updated] = await Promise.all([window.tinfoil.refreshRouters(), minDuration])
-      setState(updated)
-    } finally {
-      setRefreshing(false)
-    }
-  }, [refreshing])
-
   if (!state) {
     return (
       <div className={`shell compact ${isDark ? 'dark' : 'light'}`}>
@@ -386,34 +371,14 @@ export default function App() {
           </div>
         )}
 
-        <div className="tabs">
-          {state.routers.length === 0 ? (
-            <div className="tabs-empty">
-              {refreshing ? 'Refreshing routers…' : 'No routers reachable'}
-            </div>
-          ) : (
+        {active && (
+          <div className="tabs">
             <div className="routers-summary">
-              <span className={fleetDot(state.status)} />
-              <span className="routers-text">{state.statusMessage}</span>
+              <span className="router-dot router-verified" />
+              <span className="routers-text">{describeEnclave(state.proxy)}</span>
             </div>
-          )}
-          <button
-            type="button"
-            className="refresh"
-            onClick={() => {
-              void onRefreshRouters()
-            }}
-            disabled={refreshing}
-            title="Refresh router list from atc.tinfoil.sh"
-            aria-label="Refresh routers"
-          >
-            {refreshing ? (
-              <PiSpinner className="refresh-spin" size={14} aria-hidden="true" />
-            ) : (
-              <PiArrowsClockwise size={14} aria-hidden="true" />
-            )}
-          </button>
-        </div>
+          </div>
+        )}
 
         {active && state.proxy.verifiedAt && (
           <div className="verification-row">

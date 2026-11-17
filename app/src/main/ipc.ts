@@ -5,7 +5,6 @@ import { PROXY_DEFAULT_PORT } from './constants.js'
 import { applyLaunchAtLogin, isLaunchAtLoginSupported } from './login-item.js'
 import { getPopup, notifyPopup, setPopupCompactHeight } from './popup.js'
 import { proxyEndpoint, startProxy, stopProxy, verificationDocumentEndpoint } from './proxy.js'
-import { refreshRouters } from './secure-client.js'
 import { stateStore, type TrayState } from './state.js'
 
 function isFromPopup(event: IpcMainInvokeEvent): boolean {
@@ -16,23 +15,12 @@ function isFromPopup(event: IpcMainInvokeEvent): boolean {
 }
 
 function snapshotForRenderer(state: TrayState) {
-  const sortedRouters = [...state.routers].sort((a, b) => a.router.localeCompare(b.router))
-  const anonymized = sortedRouters.map((r, index) => ({
-    router: r.router,
-    label: `Router ${index + 1}`,
-    status: r.status,
-    lastError: r.lastError
-  }))
-
   const endpoint =
     state.proxy.enabled && state.proxy.running && state.proxy.port > 0
       ? proxyEndpoint(state.proxy.port)
       : undefined
 
   return {
-    status: state.status,
-    statusMessage: state.statusMessage,
-    routers: anonymized,
     endpoint,
     proxy: state.proxy,
     launchAtLogin: state.launchAtLogin,
@@ -125,12 +113,6 @@ export function registerIpc(): void {
     } else {
       stateStore.set({ proxy: { ...proxy, allowedHosts: sanitized } })
     }
-    return snapshotForRenderer(stateStore.get())
-  })
-
-  ipcMain.handle('tray:refreshRouters', async (event) => {
-    if (!isFromPopup(event)) return null
-    await refreshRouters()
     return snapshotForRenderer(stateStore.get())
   })
 

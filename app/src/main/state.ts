@@ -1,13 +1,5 @@
 import { EventEmitter } from 'node:events'
 
-export type VerificationStatus = 'initializing' | 'verified' | 'failed'
-
-export interface RouterState {
-  router: string
-  status: VerificationStatus
-  lastError?: string
-}
-
 export interface ProxyState {
   enabled: boolean
   running: boolean
@@ -18,14 +10,13 @@ export interface ProxyState {
   upstreamedTokens: number
   downstreamedTokens: number
   enclave?: string
+  releaseTag?: string
+  platform?: string
   verifiedAt?: string
   lastError?: string
 }
 
 export interface TrayState {
-  status: VerificationStatus
-  statusMessage: string
-  routers: RouterState[]
   proxy: ProxyState
   launchAtLogin: boolean
   lastError?: string
@@ -57,9 +48,6 @@ class StateStore extends EventEmitter {
 }
 
 export const stateStore = new StateStore({
-  status: 'initializing',
-  statusMessage: 'Starting…',
-  routers: [],
   proxy: {
     enabled: false,
     running: false,

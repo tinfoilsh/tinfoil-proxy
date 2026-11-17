@@ -1,12 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-export interface RouterSnapshot {
-  router: string
-  label: string
-  status: 'initializing' | 'verified' | 'failed'
-  lastError?: string
-}
-
 export interface ProxySnapshot {
   enabled: boolean
   running: boolean
@@ -17,14 +10,13 @@ export interface ProxySnapshot {
   upstreamedTokens: number
   downstreamedTokens: number
   enclave?: string
+  releaseTag?: string
+  platform?: string
   verifiedAt?: string
   lastError?: string
 }
 
 export interface TrayStateSnapshot {
-  status: 'initializing' | 'verified' | 'failed'
-  statusMessage: string
-  routers: RouterSnapshot[]
   endpoint?: string
   proxy: ProxySnapshot
   launchAtLogin: boolean
@@ -43,8 +35,6 @@ const api = {
     ipcRenderer.invoke('tray:setProxyPort', port),
   setAllowedHosts: (hosts: string[]): Promise<TrayStateSnapshot> =>
     ipcRenderer.invoke('tray:setAllowedHosts', hosts),
-  refreshRouters: (): Promise<TrayStateSnapshot> =>
-    ipcRenderer.invoke('tray:refreshRouters'),
   setLaunchAtLogin: (enabled: boolean): Promise<TrayStateSnapshot> =>
     ipcRenderer.invoke('tray:setLaunchAtLogin', enabled),
   setCompactHeight: (height: number): Promise<void> =>

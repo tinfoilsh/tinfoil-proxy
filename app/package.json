@@ -33,7 +33,6 @@
   },
   "dependencies": {
     "@freedomofpress/sigstore-browser": "^0.1.15",
-    "@tinfoilsh/verifier": "^1.2.2",
     "electron-updater": "^6.8.9",
     "snappyjs": "^0.7.0",
     "zod": "^4.6.7"

@@ -1,6 +1,6 @@
 # Tinfoil Proxy
 
-A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, forwards requests directly to a verified Tinfoil router enclave, verifies that enclave against the public attestation transparency log, and encrypts request and response bodies to it with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol), so intermediaries cannot read them. Point any OpenAI-compatible tool at the local URL and every request runs over a verified connection.
+A verified local HTTP proxy to a [Tinfoil](https://tinfoil.sh) secure enclave. It exposes an OpenAI-compatible endpoint at `http://127.0.0.1:3301/v1`, forwards requests directly to a verified Tinfoil router enclave, verifies that enclave against the public attestation transparency log, and by default pins every connection to the enclave's attested TLS key, so intermediaries cannot read or alter them. Point any OpenAI-compatible tool at the local URL and its requests go to the verified enclave.
 
 [![Documentation](https://img.shields.io/badge/docs-tinfoil.sh-blue)](https://docs.tinfoil.sh/local-proxy/cli)
 
@@ -25,6 +25,8 @@ tinfoil-proxy
 Point any OpenAI-compatible client at `http://127.0.0.1:3301/v1`. Run `tinfoil-proxy --help` for all flags, and see the [CLI docs](https://docs.tinfoil.sh/local-proxy/cli) and the [coding agents guide](https://docs.tinfoil.sh/tutorials/coding-agents).
 
 By default, the proxy selects and verifies a healthy Tinfoil router. Use `--host` and `--repo` to select a specific enclave and its configuration repository.
+
+On networks that intercept TLS, a pinned connection cannot be established. `--transport ehbp` instead seals request and response bodies to the enclave with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol). In that mode the method, URL, and headers (including the API key) are visible to the intercepting party, requests without a body and their responses are not sealed, and WebSockets are refused. An error response to a sealed request that the enclave did not seal is withheld: the client receives its status with a body written by the proxy.
 
 `http://127.0.0.1:3301/verification-document` exposes the active enclave verification document. The desktop app displays the same verification data from its proxy process.
 

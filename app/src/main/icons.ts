@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { app, nativeImage, type NativeImage } from 'electron'
 
-import type { VerificationStatus } from './state.js'
+type VerificationStatus = 'initializing' | 'verified' | 'failed'
 
 export type TrayIconState = 'off' | 'verified' | 'initializing' | 'failed'
 
