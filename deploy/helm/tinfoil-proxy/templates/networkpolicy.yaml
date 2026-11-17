@@ -1,0 +1,142 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $egress := .Values.networkPolicy.egress }}
+{{- if and $egress.useFQDNEgress (not $egress.trustedDomains) }}
+{{- fail "networkPolicy.egress.useFQDNEgress needs at least one entry in trustedDomains" }}
+{{- end }}
+{{- if and (not $egress.useFQDNEgress) (not $egress.tinfoilCIDRs) (not $egress.extraEgress) }}
+{{- fail "networkPolicy is enabled with no egress destinations: set networkPolicy.egress.useFQDNEgress (Cilium), tinfoilCIDRs, or extraEgress" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}-ingress
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- if not .Values.networkPolicy.ingress.allowedIngressFrom }}
+  # With policyTypes: [Ingress] an omitted field is also default-deny;
+  # the empty list keeps the empty rule explicit and schema-valid.
+  ingress: []
+  {{- else }}
+  ingress:
+    {{- range $source := .Values.networkPolicy.ingress.allowedIngressFrom }}
+    {{- if not (or $source.namespace $source.podSelector) }}
+    {{- fail "each networkPolicy.ingress.allowedIngressFrom entry needs a namespace or a podSelector" }}
+    {{- end }}
+    - from:
+      {{- if $source.namespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $source.namespace }}
+        {{- with $source.podSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+      {{- else if $source.podSelector }}
+        - podSelector:
+            matchLabels:
+              {{- toYaml $source.podSelector | nindent 14 }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- if .Values.networkPolicy.egress.useFQDNEgress }}
+---
+# FQDN egress requires Cilium. Standard NetworkPolicy cannot match hostnames;
+# when the CNI is Cilium this policy restricts egress to the exact trusted
+# Tinfoil domains, with DNS allowed for resolution.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}-egress
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  egress:
+{{- if .Values.networkPolicy.egress.allowDNS }}
+    # DNS for the trusted domains; Cilium's FQDN policy learns the answers.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.egress.dnsServer.namespace | quote }}
+            k8s:k8s-app: {{ .Values.networkPolicy.egress.dnsServer.k8sAppLabel }}
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+{{- end }}
+    - toFQDNs:
+      {{- range $domain := .Values.networkPolicy.egress.trustedDomains }}
+        - matchName: {{ $domain }}
+      {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- else }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tinfoil-proxy.fullname" . }}-egress
+  labels:
+    {{- include "tinfoil-proxy.labels" . | nindent 4 }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tinfoil-proxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+{{- if .Values.networkPolicy.egress.allowDNS }}
+    # DNS: the proxy resolves the trusted domains at startup and on re-verification.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.dnsServer.namespace | quote }}
+          podSelector:
+            matchLabels:
+              k8s-app: {{ .Values.networkPolicy.egress.dnsServer.k8sAppLabel }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+{{- if .Values.networkPolicy.egress.tinfoilCIDRs }}
+    # Tinfoil infrastructure, HTTPS only, restricted to the resolved
+    # addresses of the trusted domains. Refresh tinfoilCIDRs when Tinfoil
+    # infrastructure changes.
+    - to:
+      {{- range $cidr := .Values.networkPolicy.egress.tinfoilCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+      {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+    {{- with .Values.networkPolicy.egress.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
