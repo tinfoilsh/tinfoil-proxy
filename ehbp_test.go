@@ -271,3 +271,26 @@ func TestProxyHandsSealingTransportReplayableBodies(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyDoesNotForwardClientAddress(t *testing.T) {
+	forwarded := make(chan []string, 1)
+	enclave := newEHBPEnclave(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded <- r.Header.Values("X-Forwarded-For")
+	}))
+	proxy := startProxy(t, enclave, "")
+
+	req, err := http.NewRequest(http.MethodGet, proxy.URL+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Forwarded-For", "10.1.2.3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if got := <-forwarded; len(got) != 0 {
+		t.Fatalf("expected no X-Forwarded-For upstream, got %q", got)
+	}
+}
