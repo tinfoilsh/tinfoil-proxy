@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	ehbpclient "github.com/tinfoilsh/encrypted-http-body-protocol/client"
 	ehbpidentity "github.com/tinfoilsh/encrypted-http-body-protocol/identity"
@@ -269,5 +270,33 @@ func TestProxyHandsSealingTransportReplayableBodies(t *testing.T) {
 				t.Fatalf("expected the replayed body to match what was sent (%q), got %q", sealing.bodies, replayed)
 			}
 		})
+	}
+}
+
+func TestProxyDoesNotForwardClientAddress(t *testing.T) {
+	forwarded := make(chan []string, 1)
+	enclave := newEHBPEnclave(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded <- r.Header.Values("X-Forwarded-For")
+	}))
+	proxy := startProxy(t, enclave, "")
+
+	req, err := http.NewRequest(http.MethodGet, proxy.URL+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Forwarded-For", "10.1.2.3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-forwarded:
+		if len(got) != 0 {
+			t.Fatalf("expected no X-Forwarded-For upstream, got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("request never reached the upstream (proxy status %d)", resp.StatusCode)
 	}
 }

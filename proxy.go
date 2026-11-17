@@ -263,6 +263,9 @@ func newReverseProxy(reloading *reloadingUpstream, cacheSecret string, tokens *t
 				// default Go client User-Agent instead of advertising it.
 				req.Header.Set("User-Agent", "")
 			}
+			// A nil entry stops ReverseProxy from appending the local
+			// client's address, and drops any value the client supplied.
+			req.Header["X-Forwarded-For"] = nil
 		},
 		Transport: withLoggingTransport(log.StandardLogger(), transport, tokens),
 	}
