@@ -4,3 +4,5 @@ app
 *.md
 *.log
 .DS_Store
+/tinfoil-proxy
+deploy
