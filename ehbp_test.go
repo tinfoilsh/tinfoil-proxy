@@ -15,6 +15,7 @@ import (
 
 	ehbpclient "github.com/tinfoilsh/encrypted-http-body-protocol/client"
 	ehbpidentity "github.com/tinfoilsh/encrypted-http-body-protocol/identity"
+	"github.com/tinfoilsh/tinfoil-go"
 )
 
 // ehbpEnclave is an EHBP-terminating upstream: the router as the proxy sees it.
@@ -76,7 +77,7 @@ func (e *ehbpEnclave) transport(t *testing.T) http.RoundTripper {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &plainHTTPTransport{transport: transport}
+	return upstreamTransport(&plainHTTPTransport{transport: transport}, tinfoil.TransportModeEHBP)
 }
 
 // plainHTTPTransport rewrites the https scheme the reverse proxy Director sets
@@ -382,5 +383,75 @@ func TestProxyDoesNotForwardClientAddress(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("request never reached the upstream (proxy status %d)", resp.StatusCode)
+	}
+}
+
+// keylessIntermediary stands in for anything between the proxy and the
+// enclave: it answers without the enclave's HPKE key.
+func keylessIntermediary(t *testing.T, handler http.HandlerFunc) *ehbpEnclave {
+	t.Helper()
+	identity, err := ehbpidentity.NewIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return &ehbpEnclave{server: server, identity: identity}
+}
+
+func TestEHBPProxyWithholdsUnsealedErrorResponses(t *testing.T) {
+	intermediary := keylessIntermediary(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https://attacker.example/collect")
+		w.Header().Set("Set-Cookie", "session=forged")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"forged by intermediary"}}`)
+	})
+	proxy := startProxy(t, intermediary, "proxy-secret")
+
+	resp, err := http.Post(proxy.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected the upstream status %d, got %d", http.StatusTooManyRequests, resp.StatusCode)
+	}
+	if strings.Contains(string(body), "forged") {
+		t.Errorf("unsealed body reached the local client: %q", body)
+	}
+	if !strings.Contains(string(body), unauthenticatedResponseErrorType) {
+		t.Errorf("expected the proxy's own error body, got %q", body)
+	}
+	for _, header := range []string{"Location", "Set-Cookie"} {
+		if value := resp.Header.Get(header); value != "" {
+			t.Errorf("unsealed %s header reached the local client: %q", header, value)
+		}
+	}
+}
+
+func TestEHBPProxyForwardsSealedErrorResponses(t *testing.T) {
+	enclave := newEHBPEnclave(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"message":"Incorrect API key provided."}}`)
+	}))
+	proxy := startProxy(t, enclave, "")
+
+	resp, err := http.Post(proxy.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), "Incorrect API key provided.") {
+		t.Fatalf("expected the enclave's sealed error, got %d %q", resp.StatusCode, body)
 	}
 }

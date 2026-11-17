@@ -26,7 +26,7 @@ Point any OpenAI-compatible client at `http://127.0.0.1:3301/v1`. Run `tinfoil-p
 
 By default, the proxy selects and verifies a healthy Tinfoil router. Use `--host` and `--repo` to select a specific enclave and its configuration repository.
 
-On networks that intercept TLS, a pinned connection cannot be established. `--transport ehbp` instead seals request and response bodies to the enclave with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol). In that mode the method, URL, and headers (including the API key) are visible to the intercepting party, requests without a body and their responses are not sealed, and WebSockets are refused.
+On networks that intercept TLS, a pinned connection cannot be established. `--transport ehbp` instead seals request and response bodies to the enclave with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol). In that mode the method, URL, and headers (including the API key) are visible to the intercepting party, requests without a body and their responses are not sealed, and WebSockets are refused. An error response to a sealed request that the enclave did not seal is withheld: the client receives its status with a body written by the proxy.
 
 `http://127.0.0.1:3301/verification-document` exposes the active enclave verification document. The desktop app displays the same verification data from its proxy process.
 

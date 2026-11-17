@@ -329,7 +329,7 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 		return &upstream{
 			host:      host,
 			repo:      client.Repo(),
-			transport: client.Transport,
+			transport: upstreamTransport(client.Transport, mode),
 			verificationDocument: func() *VerifiedDocument {
 				return newVerifiedDocument(host, client.Current())
 			},
@@ -348,11 +348,21 @@ func buildUpstream(requestedEnclave, requestedRepo string, mode tinfoil.Transpor
 	return &upstream{
 		host:      host,
 		repo:      client.Repo(),
-		transport: client.Transport,
+		transport: upstreamTransport(client.Transport, mode),
 		verificationDocument: func() *VerifiedDocument {
 			return newVerifiedDocument(host, client.Current())
 		},
 	}, nil
+}
+
+// upstreamTransport adds the proxy's own checks around the SDK transport. TLS
+// mode authenticates every response on the pinned connection; EHBP mode needs
+// the guard for the responses the protocol leaves unauthenticated.
+func upstreamTransport(transport http.RoundTripper, mode tinfoil.TransportMode) http.RoundTripper {
+	if mode == tinfoil.TransportModeEHBP {
+		return &sealedResponseGuard{transport: transport}
+	}
+	return transport
 }
 
 func newProxyInstanceID() (string, error) {
