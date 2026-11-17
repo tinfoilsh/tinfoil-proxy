@@ -64,7 +64,7 @@ func TestReverseProxyRejectsRedirectResponses(t *testing.T) {
 					return nil, errors.New("unexpected reload")
 				})
 				// Exercise the desktop app's token-tracking response wrapper too.
-				proxy := newReverseProxy(reloading, "", newTokenCounter(nil))
+				proxy := newReverseProxy(reloading, newTokenCounter(nil))
 				recorder := httptest.NewRecorder()
 				proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/test", nil))
 
@@ -110,7 +110,7 @@ func TestReverseProxyPreservesNonRedirectResponses(t *testing.T) {
 					}, nil
 				}),
 			}, nil)
-			proxy := newReverseProxy(reloading, "", nil)
+			proxy := newReverseProxy(reloading, nil)
 			recorder := httptest.NewRecorder()
 			proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://localhost/test", nil))
 
