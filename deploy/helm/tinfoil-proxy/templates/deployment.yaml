@@ -79,12 +79,12 @@ spec:
             - --disable-host-check
             {{- end }}
             {{- $fullname := include "tinfoil-proxy.fullname" . }}
-            {{- $serviceHosts := list $fullname (printf "%s.%s.svc.cluster.local" $fullname .Release.Namespace) }}
+            {{- $namespaced := printf "%s.%s" $fullname .Release.Namespace }}
+            {{- $serviceHosts := list $fullname $namespaced (printf "%s.svc" $namespaced) (printf "%s.svc.%s" $namespaced .Values.clusterDomain) }}
             {{- range concat .Values.proxy.allowedHosts $serviceHosts }}
             - --allowed-host
             - {{ . | quote }}
             {{- end }}
-            {{- if or .Values.proxy.enclaveHost .Values.proxy.enclaveRepo }}
             {{- if .Values.proxy.enclaveHost }}
             - --host
             - {{ .Values.proxy.enclaveHost | quote }}
@@ -93,17 +93,12 @@ spec:
             - --repo
             - {{ .Values.proxy.enclaveRepo | quote }}
             {{- end }}
-            {{- end }}
-            {{- if .Values.proxy.userCacheSecret.existingSecret }}
-            - --user-cache-secret
-            - $(USER_CACHE_SECRET)
-            {{- end }}
             {{- range .Values.proxy.extraArgs }}
             - {{ . | quote }}
             {{- end }}
           {{- if .Values.proxy.userCacheSecret.existingSecret }}
           env:
-            - name: USER_CACHE_SECRET
+            - name: TINFOIL_USER_CACHE_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.proxy.userCacheSecret.existingSecret }}
@@ -113,12 +108,21 @@ spec:
             - name: http
               containerPort: {{ .Values.proxy.port }}
               protocol: TCP
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
           {{- if .Values.healthcheck.enabled }}
           readinessProbe:
             {{- if eq .Values.healthcheck.type "http" }}
             httpGet:
               path: /healthz
               port: http
+              httpHeaders:
+                - name: Host
+                  value: {{ $fullname | quote }}
             {{- else }}
             tcpSocket:
               port: http
@@ -129,14 +133,8 @@ spec:
             successThreshold: {{ .Values.healthcheck.readiness.successThreshold }}
             failureThreshold: {{ .Values.healthcheck.readiness.failureThreshold }}
           livenessProbe:
-            {{- if eq .Values.healthcheck.type "http" }}
-            httpGet:
-              path: /healthz
-              port: http
-            {{- else }}
             tcpSocket:
               port: http
-            {{- end }}
             initialDelaySeconds: {{ .Values.healthcheck.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.healthcheck.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.healthcheck.liveness.timeoutSeconds }}

@@ -90,9 +90,58 @@
         }
       }
     },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "preStopSleepSeconds": { "type": "integer", "minimum": 0 },
+    "clusterDomain": { "type": "string", "minLength": 1 },
     "networkPolicy": {
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowedIngressFrom": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "namespace": { "type": "string", "minLength": 1 },
+                  "podSelector": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "additionalProperties": { "type": "string" }
+                  }
+                },
+                "anyOf": [
+                  { "required": ["namespace"] },
+                  { "required": ["podSelector"] }
+                ]
+              }
+            }
+          }
+        },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "useFQDNEgress": { "type": "boolean" },
+            "trustedDomains": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "tinfoilCIDRs": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "allowDNS": { "type": "boolean" },
+            "dnsServer": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "k8sAppLabel": { "type": "string", "minLength": 1 }
+              }
+            },
+            "extraEgress": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
     },
     "resources": {
       "type": "object",

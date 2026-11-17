@@ -5,4 +5,4 @@ type: application
 version: 0.1.0
 # Matches the image tags published by the release workflow (no "v" prefix);
 # the release job overrides this with --app-version on each tag.
-appVersion: "0.2.9"
+appVersion: "0.3.0-rc.5"
