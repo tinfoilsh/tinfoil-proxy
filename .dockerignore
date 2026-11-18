@@ -5,3 +5,4 @@ app
 *.log
 .DS_Store
 /tinfoil-proxy
+deploy
