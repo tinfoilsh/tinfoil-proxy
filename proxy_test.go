@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1287,4 +1288,44 @@ func (r *recordingRoundTripper) RoundTrip(_ *http.Request) (*http.Response, erro
 		Body:       io.NopCloser(strings.NewReader("{}")),
 		Header:     make(http.Header),
 	}, nil
+}
+
+func TestReadEnclaveConfigRequiresHostAndExcludesPins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tinfoil-config.yml")
+	if err := os.WriteFile(path, []byte("cvm-version: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(t.TempDir(), "empty.yml")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		path    string
+		unset   bool
+		host    string
+		pin     tinfoil.Pin
+		want    string
+		wantErr bool
+	}{
+		{name: "unset", unset: true, host: "enclave.example.com"},
+		{name: "set but empty", host: "enclave.example.com", wantErr: true},
+		{name: "with host", path: path, host: "enclave.example.com", want: "cvm-version: test\n"},
+		{name: "without host", path: path, wantErr: true},
+		{name: "with repo", path: path, host: "enclave.example.com", pin: tinfoil.Pin{Repo: "example/model"}, wantErr: true},
+		{name: "with project", path: path, host: "enclave.example.com", pin: tinfoil.Pin{Project: "example/model"}, wantErr: true},
+		{name: "missing file", path: filepath.Join(t.TempDir(), "missing.yml"), host: "enclave.example.com", wantErr: true},
+		{name: "empty file", path: empty, host: "enclave.example.com", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := readEnclaveConfig(tc.path, !tc.unset, tc.host, tc.pin)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("readEnclaveConfig error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("readEnclaveConfig = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }

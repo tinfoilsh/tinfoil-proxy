@@ -27,6 +27,7 @@ var (
 	enclaveHost      string
 	repo             string
 	project          string
+	configFile       string
 	listenPort       uint
 	listenAddr       string
 	logFormat        string
@@ -52,6 +53,7 @@ func init() {
 	rootCmd.Flags().StringVarP(&enclaveHost, "host", "e", "", "Enclave hostname")
 	rootCmd.Flags().StringVarP(&repo, "repo", "r", "", "GitHub repository the enclave must run a release of")
 	rootCmd.Flags().StringVar(&project, "project", "", "Config registry project the enclave must run a config of")
+	rootCmd.Flags().StringVar(&configFile, "config", "", "Config file the enclave must run exactly; requires --host and excludes --repo and --project")
 	rootCmd.Flags().UintVarP(&listenPort, "port", "p", defaultListenPort, "Port to listen on")
 	rootCmd.Flags().StringVarP(&listenAddr, "bind", "b", defaultListenAddr, "Address to bind to")
 	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format: text or json")
