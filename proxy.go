@@ -24,6 +24,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/tinfoilsh/tinfoil-go"
+	"github.com/tinfoilsh/tinfoil-go/verify"
 )
 
 const (
@@ -126,6 +127,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		"enclave_host": enclaveHost,
 		"repo":         repo,
 		"project":      project,
+		"config":       configFile,
 		"transport":    transportMode,
 	}).Info("initializing secure client")
 
@@ -136,7 +138,11 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	cacheSecret := resolveUserCacheSecret(userCacheSecret, cmd.Flags().Changed(userCacheSecretFlag))
 
 	requestedEnclave, requestedPin := enclaveHost, tinfoil.Pin{Repo: repo, Project: project}
-	initial, err := buildUpstream(requestedEnclave, requestedPin, mode, cacheSecret)
+	config, err := readEnclaveConfig(configFile, cmd.Flags().Changed("config"), requestedEnclave, requestedPin)
+	if err != nil {
+		return err
+	}
+	initial, err := buildUpstream(requestedEnclave, requestedPin, config, mode, cacheSecret)
 	if err != nil {
 		log.WithError(err).Error("failed to create HTTP client")
 		return err
@@ -146,7 +152,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	log.Debug("secure HTTP client created successfully")
 
 	reloading := newReloadingUpstream(initial, func() (*upstream, error) {
-		return buildUpstream(requestedEnclave, requestedPin, mode, cacheSecret)
+		return buildUpstream(requestedEnclave, requestedPin, config, mode, cacheSecret)
 	})
 
 	var tokens *tokenCounter
@@ -345,13 +351,26 @@ type upstream struct {
 // response bodies are sealed to the attested HPKE key, and the SDK retries
 // once after a key rotation, which relies on request bodies being replayable
 // (see setReplayableBody).
-func buildUpstream(requestedEnclave string, requestedPin tinfoil.Pin, mode tinfoil.TransportMode, cacheSecret string) (*upstream, error) {
+func buildUpstream(requestedEnclave string, requestedPin tinfoil.Pin, config []byte, mode tinfoil.TransportMode, cacheSecret string) (*upstream, error) {
 	ctx := context.Background()
-	if selectsEnclave(requestedEnclave, requestedPin) {
-		client, err := tinfoil.NewEnclaveHTTPClient(ctx, requestedEnclave, enclavePin(requestedPin), &tinfoil.EnclaveOptions{
+	if config != nil || selectsEnclave(requestedEnclave, requestedPin) {
+		options := &tinfoil.EnclaveOptions{
 			TransportMode:   mode,
 			UserCacheSecret: cacheSecret,
-		})
+		}
+		pin := enclavePin(requestedPin)
+		if config != nil {
+			verifier, err := verify.NewVerifier(verify.WithEmbeddedReferences(verify.EmbeddedReferences{
+				Config: &verify.EmbeddedConfig{Bytes: config},
+			}))
+			if err != nil {
+				return nil, fmt.Errorf("--config: %w", err)
+			}
+			options.Verifier = verifier
+			// The config bytes are the whole expectation; a router pin would reject them.
+			pin = tinfoil.Pin{}
+		}
+		client, err := tinfoil.NewEnclaveHTTPClient(ctx, requestedEnclave, pin, options)
 		if err != nil {
 			return nil, err
 		}
@@ -381,6 +400,32 @@ func buildUpstream(requestedEnclave string, requestedPin tinfoil.Pin, mode tinfo
 			return newVerificationSummary(host, client.Current())
 		},
 	}, nil
+}
+
+// readEnclaveConfig loads the config file an enclave must run exactly. It names
+// no enclave of its own, so it needs --host, and it is the whole expectation, so
+// it excludes --repo and --project.
+func readEnclaveConfig(path string, set bool, requestedEnclave string, requestedPin tinfoil.Pin) ([]byte, error) {
+	if !set {
+		return nil, nil
+	}
+	if path == "" {
+		return nil, errors.New("--config needs a file path")
+	}
+	if requestedEnclave == "" {
+		return nil, errors.New("--config requires --host")
+	}
+	if requestedPin != (tinfoil.Pin{}) {
+		return nil, errors.New("--config cannot be combined with --repo or --project")
+	}
+	config, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading --config: %w", err)
+	}
+	if len(config) == 0 {
+		return nil, fmt.Errorf("--config %s is empty", path)
+	}
+	return config, nil
 }
 
 // selectsEnclave reports whether the flags name a specific enclave instead of

@@ -26,7 +26,11 @@ tinfoil-proxy
 
 Point any OpenAI-compatible client at `http://127.0.0.1:3301/v1`. Run `tinfoil-proxy --help` for all flags, and see the [CLI docs](https://docs.tinfoil.sh/local-proxy/cli) and the [coding agents guide](https://docs.tinfoil.sh/tutorials/coding-agents).
 
-By default, the proxy selects and verifies a healthy Tinfoil router. Use `--host` to select a specific enclave, with `--repo` for the GitHub repository it must run a release of or `--project` for its config registry project. The two are separate namespaces; setting both accepts either.
+By default, the proxy selects and verifies a healthy Tinfoil router. Use `--host` to select a specific enclave, with `--repo` for the GitHub repository it must run a release of or `--project` for its config registry project. The two are separate namespaces; setting both accepts either. For an enclave whose config is never published, pass the config file itself with `--config` alongside `--host`; the proxy then accepts only an enclave running exactly those bytes:
+
+```sh
+tinfoil-proxy --host enclave.example.com --config tinfoil-config.yml
+```
 
 On networks that intercept TLS, a pinned connection cannot be established. `--transport ehbp` instead seals request and response bodies to the enclave with the [Encrypted HTTP Body Protocol](https://github.com/tinfoilsh/encrypted-http-body-protocol). In that mode the method, URL, and headers (including the API key) are visible to the intercepting party, requests without a body and their responses are not sealed, and WebSockets are refused. An error response to a sealed request that the enclave did not seal is withheld: the client receives its status with a body written by the proxy.
 
